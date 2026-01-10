@@ -1,0 +1,11 @@
+bin/
+build/
+out/
+artifacts/
+test/
+*.o
+*.txt
+*.png
+*.gif
+
+__pycache__/
