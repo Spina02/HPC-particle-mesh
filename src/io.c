@@ -70,7 +70,10 @@ int save_positions_bin(Particles* particles, char* filename) {
         free(full_path);
         return EXIT_FAILURE;
     }
-    for (uint i = 0; i < particles->N; i++) {
+
+    int N = particles->N;
+    
+    for (int i = 0; i < N; i++) {
         fwrite(&particles->pos_col[i], sizeof(double), 1, fp);
         fwrite(&particles->pos_row[i], sizeof(double), 1, fp);
     }

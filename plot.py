@@ -105,6 +105,17 @@ def plot_particles(method, params_path  , positions_path, status_path):
         alpha=alpha_grid,
     )
 
+    # make grid lines semi-transparent
+    ax.grid(True, alpha=0.2)
+    x_ticks = np.arange(0, BoxSizeX + 1e-9, dx)
+    y_ticks = np.arange(0, BoxSizeY + 1e-9, dy)
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+    y_labels = [f"{t:.0f}" if (i + 1) % 10 == 0 else "" for i, t in enumerate(y_ticks)]
+    x_labels = [f"{t:.0f}" if (i + 1) % 10 == 0 else "" for i, t in enumerate(x_ticks)]
+    ax.set_xticklabels(x_labels, fontsize=8)
+    ax.set_yticklabels(y_labels, fontsize=8)
+
     # keep cells square for both on-screen and saved figures
     ax.set_xlim(0, BoxSizeX)
     ax.set_ylim(0, BoxSizeY)

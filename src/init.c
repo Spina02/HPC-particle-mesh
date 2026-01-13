@@ -124,16 +124,7 @@ Particles* init_particles(Params* params) {
         return NULL;
     }
 
-    particles->mass = (double*) malloc(particles->N * sizeof(double));
-    if (particles->mass == NULL) {
-        printf("Error while allocating memory for the particles masses\n");
-        destroy_particles(particles);
-        return NULL;
-    }
-
-    for (uint i = 0; i < particles->N; i++) {
-        particles->mass[i] = 0.01;
-    }
+    particles->mass = 0.01;
 
     particles->acc_col = (double*) malloc(particles->N * sizeof(double));
     if (particles->acc_col == NULL) {
@@ -152,6 +143,7 @@ Particles* init_particles(Params* params) {
     memset(particles->acc_col, 0, particles->N * sizeof(double));
     memset(particles->acc_row, 0, particles->N * sizeof(double));
 
+    // auto vectorize 16 byte vecs
     particles->max_acc_col = 0.0;
     particles->max_acc_row = 0.0;
 
@@ -280,7 +272,6 @@ int destroy_particles(Particles* particles) {
     if (particles->pos_row) free(particles->pos_row);
     if (particles->vel_col) free(particles->vel_col);
     if (particles->vel_row) free(particles->vel_row);
-    if (particles->mass) free(particles->mass);
     if (particles->acc_col) free(particles->acc_col);
     if (particles->acc_row) free(particles->acc_row);
     if (particles) free(particles);

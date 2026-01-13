@@ -16,12 +16,6 @@
 #define _col_ 0
 #define _row_ 1
 
-#ifdef NPERIODIC
-    #define PERIODIC 0
-#else
-    #define PERIODIC 1
-#endif
-
 #ifdef NRANDOM
     #define RANDOM 0
 #else
@@ -47,7 +41,7 @@ typedef struct Particles {
     double* restrict acc_col;
     double* restrict acc_row;
     
-    double* restrict mass;
+    double mass;
 
     double max_acc_col;
     double max_acc_row;
