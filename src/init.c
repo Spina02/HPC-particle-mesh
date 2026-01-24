@@ -3,7 +3,13 @@
 // global normalized gravitational constant
 double G_prime = 0.0;
 
-Params* read_params(char* filename) {
+Params* read_params(int argc, char* argv[]) {
+
+    char* filename = argv[1];
+    if (filename == NULL) {
+        printf("Error: missing parameters file\n");
+        return NULL;
+    }
     FILE* file = fopen(filename, "r");
     if (file == NULL) {
         perror("fopen");
@@ -80,6 +86,13 @@ Params* read_params(char* filename) {
     debug_print("BoxSizeY \t= %g\n", params->grid.BoxSize[1]);
     debug_print("A_deltaPar\t= %g\n", params->system.A_deltaPar);
 
+    if (argc > 2) { // args: params_file [Npoints] [grid_x] [grid_y]
+        if (argc > 2) params->grid.Npoints = (uint) atoi(argv[2]);
+        if (argc > 3) params->grid.Ngrid[0] = (uint) atoi(argv[3]);
+        if (argc > 4) params->grid.Ngrid[1] = (uint) atoi(argv[4]);
+        if (argc > 5) params->system.n_iter = (uint) atoi(argv[5]);
+    }
+
     if ((!params->norm.UnitVel || !params->norm.UnitMass || !params->norm.UnitLength || !params->norm.UnitTime) ||
         (!params->grid.Npoints || !params->grid.Ngrid[0] || !params->grid.Ngrid[1]) ||
         (!params->grid.BoxSize[0] || !params->grid.BoxSize[1]) ||
@@ -100,6 +113,7 @@ Particles* init_particles(Params* params) {
         printf("Error while allocating memory for the particles\n");
         return NULL;
     }
+    memset(particles, 0, sizeof(Particles));
 
     int N = params->grid.Npoints;
     if (RANDOM) { // round up to the nearest square number
@@ -108,16 +122,16 @@ Particles* init_particles(Params* params) {
     }
     particles->N = N;
 
-    particles->pos_col = (double*) malloc(particles->N * sizeof(double));
-    particles->pos_row = (double*) malloc(particles->N * sizeof(double));
+    particles->pos_col = (double*) allocate_aligned(particles->N * sizeof(double));
+    particles->pos_row = (double*) allocate_aligned(particles->N * sizeof(double));
     if (particles->pos_col == NULL || particles->pos_row == NULL) {
         printf("Error while allocating memory for the particles positions\n");
         destroy_particles(particles);
         return NULL;
     }
 
-    particles->vel_col = (double*) malloc(particles->N * sizeof(double));
-    particles->vel_row = (double*) malloc(particles->N * sizeof(double));
+    particles->vel_col = (double*) allocate_aligned(particles->N * sizeof(double));
+    particles->vel_row = (double*) allocate_aligned(particles->N * sizeof(double));
     if (particles->vel_col == NULL || particles->vel_row == NULL) {
         printf("Error while allocating memory for the particles velocities\n");
         destroy_particles(particles);
@@ -126,20 +140,22 @@ Particles* init_particles(Params* params) {
 
     particles->mass = 0.01;
 
-    particles->acc_col = (double*) malloc(particles->N * sizeof(double));
+    particles->acc_col = (double*) allocate_aligned(particles->N * sizeof(double));
     if (particles->acc_col == NULL) {
         printf("Error while allocating memory for the particles forces x\n");
         destroy_particles(particles);
         return NULL;
     }
 
-    particles->acc_row = (double*) malloc(particles->N * sizeof(double));
+    particles->acc_row = (double*) allocate_aligned(particles->N * sizeof(double));
     if (particles->acc_row == NULL) {
         printf("Error while allocating memory for the particles forces y\n");
         destroy_particles(particles);
         return NULL;
     }
 
+    memset(particles->vel_col, 0, particles->N * sizeof(double));
+    memset(particles->vel_row, 0, particles->N * sizeof(double));
     memset(particles->acc_col, 0, particles->N * sizeof(double));
     memset(particles->acc_row, 0, particles->N * sizeof(double));
 
@@ -162,9 +178,10 @@ double compute_Gprime(NormalizationParams* norm) {
 void place_particles(Particles* particles, vec2d_t BoxSize, double A_deltaPar) {
     srand48(42); // Fixed seed for reproducibility
 
+    int N = particles->N;
     // If N is not a perfect square, still create a near-square lattice and fill row-major.
-    int ncols = (int)ceil(sqrt((double)particles->N));
-    int nrows = (int)ceil((double)particles->N / (double)ncols);
+    int ncols = (int)ceil(sqrt((double)N));
+    int nrows = (int)ceil((double)N / (double)ncols);
     double dx_grid = BoxSize[_col_] / (double)ncols;
     double dy_grid = BoxSize[_row_] / (double)nrows;
 
@@ -176,7 +193,10 @@ void place_particles(Particles* particles, vec2d_t BoxSize, double A_deltaPar) {
     double psi_amp_col = (fabs(k_col) > 0.0) ? (A_deltaPar / k_col) : 0.0;
     double psi_amp_row = (fabs(k_row) > 0.0) ? (A_deltaPar / k_row) : 0.0;
 
-    for (uint i = 0; i < particles->N; i++) {
+    #if defined(OMP)
+    #pragma omp parallel for schedule(static)
+    #endif
+    for (uint i = 0; i < N; i++) {
         double q_col, q_row;
 
         if (RANDOM) {
@@ -201,13 +221,16 @@ void place_particles(Particles* particles, vec2d_t BoxSize, double A_deltaPar) {
 
         particles->pos_col[i] = q_col + psi_col;
         particles->pos_row[i] = q_row + psi_row;
-
-        particles->vel_col[i] = 0.0;
-        particles->vel_row[i] = 0.0;
     }
 }
 
 Mesh* init_mesh(vec2_t Ngrid) {
+
+    #if defined(OMP)
+    fftw_init_threads();
+    fftw_plan_with_nthreads(omp_get_max_threads());
+    #endif
+
     Mesh* mesh = (Mesh*) malloc(sizeof(Mesh));
     if (mesh == NULL) {
         printf("Error while allocating memory for the mesh\n");
@@ -225,12 +248,12 @@ Mesh* init_mesh(vec2_t Ngrid) {
     mesh->kPot = (fftw_complex*) fftw_alloc_complex(fft_size);
 
     // allocate memory for the real-space arrays
-    mesh->density = (double*) fftw_alloc_real(size);
-    mesh->pot = (double*) fftw_alloc_real(size);
+    mesh->density = (double*) allocate_aligned(size * sizeof(double));
+    mesh->pot = (double*) allocate_aligned(size * sizeof(double));
 
     // allocate memory for the forces arrays
-    mesh->forces_x = (double*) fftw_alloc_real(size);
-    mesh->forces_y = (double*) fftw_alloc_real(size);
+    mesh->forces_x = (double*) allocate_aligned(size * sizeof(double));
+    mesh->forces_y = (double*) allocate_aligned(size * sizeof(double));
 
     if (!mesh->kDensity || !mesh->kPot || !mesh->density || !mesh->pot) {
         printf("Error while allocating mesh arrays\n");
@@ -243,8 +266,8 @@ Mesh* init_mesh(vec2_t Ngrid) {
     memset(mesh->pot, 0, size * sizeof(double));
 
     // back and forth FFT plans (note: FFTW takes int dimensions)
-    mesh->fft_real_fwd = fftw_plan_dft_r2c_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->density, mesh->kDensity, FFTW_ESTIMATE);
-    mesh->fft_real_bck = fftw_plan_dft_c2r_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->kPot, mesh->pot, FFTW_ESTIMATE);
+    mesh->fft_real_fwd = fftw_plan_dft_r2c_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->density, mesh->kDensity, FFTW_MEASURE);
+    mesh->fft_real_bck = fftw_plan_dft_c2r_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->kPot, mesh->pot, FFTW_MEASURE);
     if (!mesh->fft_real_fwd || !mesh->fft_real_bck) {
         printf("Error while creating FFTW plans\n");
         destroy_mesh(mesh);
@@ -255,14 +278,17 @@ Mesh* init_mesh(vec2_t Ngrid) {
 }
 
 int destroy_mesh(Mesh* mesh) {
+    #ifdef OMP
+    fftw_cleanup_threads();
+    #endif
     if (mesh->fft_real_fwd) fftw_destroy_plan(mesh->fft_real_fwd);
     if (mesh->fft_real_bck) fftw_destroy_plan(mesh->fft_real_bck);
     if (mesh->kDensity) fftw_free(mesh->kDensity);
     if (mesh->kPot) fftw_free(mesh->kPot);
-    if (mesh->density) fftw_free(mesh->density);
-    if (mesh->pot) fftw_free(mesh->pot);
-    if (mesh->forces_x) fftw_free(mesh->forces_x);
-    if (mesh->forces_y) fftw_free(mesh->forces_y);
+    if (mesh->density) free(mesh->density);
+    if (mesh->pot) free(mesh->pot);
+    if (mesh->forces_x) free(mesh->forces_x);
+    if (mesh->forces_y) free(mesh->forces_y);
     if (mesh) free(mesh);
     return EXIT_SUCCESS;
 }

@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#ifdef OMP
+#include <omp.h>
+#endif
 
 // debug print macro
 #ifdef DEBUG
@@ -21,6 +24,10 @@
 #else
     #define RANDOM 1
 #endif
+
+#define ALIGNMENT 64
+
+#define THREADS_LIMIT 32
 
 #define G_SI 6.67e-11
 extern double G_prime;
@@ -88,5 +95,10 @@ typedef struct Mesh {
     fftw_plan fft_real_bck;
     size_t grid_size;
 } Mesh;
+
+typedef struct {
+    uint particle_index;
+    uint cell_index;
+} SortItem;
 
 #endif // GLOBAL_H

@@ -2,7 +2,10 @@
 #define PM_H
 
 #include "global.h"
+// #include "qsort.h"
+#include "rsort.h"
 #include <sys/param.h>
+#include <stdbool.h>
 
 #define METHOD "TSC"
 
@@ -26,12 +29,9 @@ void kick_particles(Particles* restrict particles, double dt);
 
 inline static double TSC_weight(double dist) {
 #ifdef VEC
-    double res = 0.0;
-    bool mask = dist < 0.5;
-    res += mask * (0.75 - dist * dist);
-    mask = (dist > 0.5) && (dist < 1.5);
-    res += mask * 0.5 * (1.5 - dist) * (1.5 - dist);
-    return res;
+    double w1 = (0.75 - dist * dist);
+    double w2 = 0.5 * (1.5 - dist) * (1.5 - dist);
+    return (dist < 0.5) * w1 + (dist >= 0.5 && dist < 1.5) * w2;
 #else
     // 3/4 - |x|^2
     if (dist < 0.5)
@@ -44,16 +44,25 @@ inline static double TSC_weight(double dist) {
 #endif
 }
 
-inline static int fast_mod(double grid_idx, uint size) {
+
+#ifdef POW2GRID
+inline static int fast_mod(int grid_idx, uint size) {
+    return grid_idx & (size - 1);
+}
+#else
+inline static int fast_mod(int grid_idx, uint size) {
     bool out_low = grid_idx < 0.0;
-    bool out_high = grid_idx > size;
+    bool out_high = grid_idx >= size;
     return (int) (grid_idx + out_low * size - out_high * size);
 }
+#endif
 
 inline static double fast_fmod(double grid_idx, uint size) {
     bool out_low = grid_idx < 0.0;
-    bool out_high = grid_idx > size;
+    bool out_high = grid_idx >= size;
     return grid_idx + out_low * size - out_high * size;
 }
+
+void reorder_particles(Particles* p, GridParams* grid);
 
 #endif // PM_H

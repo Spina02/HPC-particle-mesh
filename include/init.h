@@ -7,7 +7,7 @@
 #include "global.h"
 
 // function to read the parameters from a file
-Params* read_params(char* filename);
+Params* read_params(int argc, char** argv);
 
 double compute_Gprime(NormalizationParams* norm);
 
@@ -17,6 +17,18 @@ int destroy_particles(Particles* particles);
 
 Mesh* init_mesh(vec2_t Ngrid);
 int destroy_mesh(Mesh* mesh);
+
+static inline void* allocate_aligned(size_t size) {
+    #ifdef ALIGNED
+    void* ptr;
+    if (posix_memalign(&ptr, ALIGNMENT, size) != 0) {
+            return NULL;
+        }
+        return ptr;
+    #else
+    return malloc(size);
+    #endif
+}
 
 
 #endif // INIT_H
