@@ -1,5 +1,7 @@
 #include "rsort.h"
+#include <string.h>
 
+#ifndef USE_GPU
 void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     int max_threads = 1;
     #ifdef OMP
@@ -20,12 +22,20 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     for (int shift = 0; shift < 32; shift += RADIX_BITS) {
         
         // 1: compute histograms
+        #if defined(OMP)
         #pragma omp parallel
+        #endif
         {
+            #if defined(OMP)
             int tid = omp_get_thread_num();
+            #else
+            int tid = 0;
+            #endif
             memset(histograms[tid], 0, RADIX_BUCKETS * sizeof(uint));
 
+            #if defined(OMP)
             #pragma omp for schedule(static)
+            #endif
             for(uint i = 0; i < N; i++) {
                 uint key = curr_src[i].cell_index;
                 uint bucket = (key >> shift) & RADIX_MASK;
@@ -39,17 +49,25 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
         for (int b = 0; b < RADIX_BUCKETS; b++) {
             for (int t = 0; t < max_threads; t++) {
                 uint count = histograms[t][b];
-                histograms[t][b] = total_count; // L'offset di scrittura per il thread t nel bucket b
+                histograms[t][b] = total_count; // Write offset for thread t in bucket b
                 total_count += count;
             }
         }
 
         // 3. reorder particles
+        #if defined(OMP)
         #pragma omp parallel
+        #endif
         {
+            #if defined(OMP)
             int tid = omp_get_thread_num();
+            #else
+            int tid = 0;
+            #endif
            
+            #if defined(OMP)
             #pragma omp for schedule(static)
+            #endif
             for(uint i = 0; i < N; i++) {
                 uint key = curr_src[i].cell_index;
                 uint bucket = (key >> shift) & RADIX_MASK;
@@ -70,4 +88,12 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     for(int i=0; i<max_threads; i++) {
         free(histograms[i]);
     }
+    free(histograms);
 }
+#endif
+
+#ifdef USE_GPU
+void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
+    // TODO: implement GPU version
+}
+#endif

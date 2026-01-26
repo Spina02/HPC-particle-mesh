@@ -1,0 +1,2 @@
+nodes,tasks_per_node,cpus_per_task,npoints,ngrid_x,ngrid_y,throughput,total,density,fft,potential,forces,interpolation,kick,drift,reorder
+1,1,1,1048576,512,512,12655036.962003,24.857517,9.079487,1.031172,0.474667,0.280845,11.364031,1.060259,0.655018,0.841363

@@ -45,29 +45,16 @@ echo "Executing HPC job - Weak Scaling..."
 echo "Base configuration: Npoints=${BASE_NPOINTS}, Grid=${BASE_NGRID_X}x${BASE_NGRID_Y}"
 
 for THREADS in 1 2 4 8 16 32 64 112; do
+    # Calculate the scaled parameters for weak scaling
+    # Npoints scales linearly with the number of threads
+    NPOINTS=$((BASE_NPOINTS * THREADS))
     
-    # Calculate the grid target (for 112 threads, we use 128x128 grid)
-    if [ "$THREADS" -eq 112 ]; then
-        GRID_TARGET=128
-    else
-        GRID_TARGET=$THREADS
-    fi
-
-    # Calculate the grid dimensions based on GRID_TARGET (Rectangular logic)
-    LOG2_TARGET=$(awk -v t=$GRID_TARGET 'BEGIN {print int(log(t)/log(2))}')
-    EXP_X=$(( (LOG2_TARGET + 1) / 2 ))
-    EXP_Y=$(( LOG2_TARGET / 2 ))
-    MULT_X=$(( 1 << EXP_X ))
-    MULT_Y=$(( 1 << EXP_Y ))
+    # The grid scales with sqrt(THREADS) to maintain the point density per cell
+    # Rounded to the nearest integer
+    NGRID_X=$(echo "scale=0; $BASE_NGRID_X * sqrt($THREADS)" | bc | awk '{printf "%.0f", $1}')
+    NGRID_Y=$(echo "scale=0; $BASE_NGRID_Y * sqrt($THREADS)" | bc | awk '{printf "%.0f", $1}')
     
-    NGRID_X=$(( BASE_NGRID_X * MULT_X ))
-    NGRID_Y=$(( BASE_NGRID_Y * MULT_Y ))
-    
-    # Scale the number of points based on the grid target for consistency
-    # for 112 threads, we use scale the number of points to 128
-    NPOINTS=$(( BASE_NPOINTS * GRID_TARGET ))
-
-    echo "Threads: ${THREADS} (Grid Target: ${GRID_TARGET}) -> Grid: ${NGRID_X}x${NGRID_Y}"
+    echo "Threads: ${THREADS} -> Npoints: ${NPOINTS}, Grid: ${NGRID_X}x${NGRID_Y}"
     
     export OMP_NUM_THREADS=${THREADS}
     sbatch --nodes=1 \

@@ -1,22 +1,20 @@
 #!/bin/bash
 
 # =======================================================
-#            Serial execution on Leonardo
+#            Vectorized (vec) execution on Leonardo
 # =======================================================
-# Single run, no scaling. Sensible problem size from params.conf.
+# Single run, no scaling. Same problem size as serial for comparison.
 
-export JOB_NAME="pm-serial"
+export JOB_NAME="pm-vec"
 mkdir -p results
-export TIMING_CSV=results/serial_timing.csv
+export TIMING_CSV=results/vec_timing.csv
 
 ACCOUNT=uTS25_Tornator_0
 PARTITION=dcgp_usr_prod
-EXEC=./bin/particle-mesh-serial
+EXEC=./bin/particle-mesh-vec
 CONF=params.conf
 
 # Optional: override problem size (Npoints NgridX NgridY [n_iter])
-# Default from params.conf: 1048576 particles, 512x512 grid, 300 iterations
-# Example for a quicker test: 262144 256 256 100
 EXTRA_ARGS="${@:-}"
 
 module purge
@@ -24,8 +22,8 @@ module load gcc/12.2.0
 module load fftw/3.3.10--openmpi--4.1.6--gcc--12.2.0-spack0.22
 
 if [ "$COMPILE" = TRUE ]; then
-    echo "Compiling serial build on compute node..."
-    srun -N1 -n1 -c1 --mem=4GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-serial serial
+    echo "Compiling vec build on compute node..."
+    srun -N1 -n1 -c1 --mem=4GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-vec vec
 fi
 
 if [ $? -ne 0 ]; then
@@ -33,7 +31,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "Submitting serial job..."
+echo "Submitting vec job..."
 sbatch --nodes=1 \
     --ntasks-per-node=1 \
     --cpus-per-task=1 \
@@ -43,4 +41,4 @@ sbatch --nodes=1 \
     --account=$ACCOUNT \
     ./scripts/sbatch.sh $EXEC $CONF $EXTRA_ARGS
 
-echo "Serial job submitted. Output in artifacts/pm_<jobid>.out"
+echo "Vec job submitted. Output in artifacts/pm_<jobid>.out"

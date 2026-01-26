@@ -26,12 +26,11 @@ Params* read_params(int argc, char* argv[]) {
 
     char* lineptr = NULL;
     size_t n = 0;
-    ssize_t nread;
 
     char name[32];
     double value;
 
-    while ((nread = getline(&lineptr, &n, file)) != -1) {
+    while ((getline(&lineptr, &n, file)) != -1) {
         // Skip comments and blank lines
         if (lineptr[0] == '#' || lineptr[0] == '\n')
             continue;
@@ -113,6 +112,7 @@ Particles* init_particles(Params* params) {
         printf("Error while allocating memory for the particles\n");
         return NULL;
     }
+    
     memset(particles, 0, sizeof(Particles));
 
     int N = params->grid.Npoints;
@@ -154,10 +154,20 @@ Particles* init_particles(Params* params) {
         return NULL;
     }
 
+    #ifdef OMP
+    #pragma omp parallel for simd schedule(static)
+    for (int i = 0; i < particles->N; i++) {
+        particles->vel_col[i] = 0.0;
+        particles->vel_row[i] = 0.0;
+        particles->acc_col[i] = 0.0;
+        particles->acc_row[i] = 0.0;
+    }
+    #else
     memset(particles->vel_col, 0, particles->N * sizeof(double));
     memset(particles->vel_row, 0, particles->N * sizeof(double));
     memset(particles->acc_col, 0, particles->N * sizeof(double));
     memset(particles->acc_row, 0, particles->N * sizeof(double));
+    #endif
 
     // auto vectorize 16 byte vecs
     particles->max_acc_col = 0.0;
@@ -193,10 +203,7 @@ void place_particles(Particles* particles, vec2d_t BoxSize, double A_deltaPar) {
     double psi_amp_col = (fabs(k_col) > 0.0) ? (A_deltaPar / k_col) : 0.0;
     double psi_amp_row = (fabs(k_row) > 0.0) ? (A_deltaPar / k_row) : 0.0;
 
-    #if defined(OMP)
-    #pragma omp parallel for schedule(static)
-    #endif
-    for (uint i = 0; i < N; i++) {
+    for (int i = 0; i < N; i++) {
         double q_col, q_row;
 
         if (RANDOM) {
@@ -243,9 +250,13 @@ Mesh* init_mesh(vec2_t Ngrid) {
     size_t fft_size = (size_t) Ngrid[_row_] * (Ngrid[_col_] / 2.0 + 1);
     mesh->grid_size = size;
 
-    // allocate memory for the FFTW arrays
-    mesh->kDensity = (fftw_complex*) fftw_alloc_complex(fft_size);
-    mesh->kPot = (fftw_complex*) fftw_alloc_complex(fft_size);
+    #ifdef USE_GPU
+        mesh->kDensity = (cufftDoubleComplex*) allocate_aligned(fft_size * sizeof(cufftDoubleComplex));
+        mesh->kPot     = (cufftDoubleComplex*) allocate_aligned(fft_size * sizeof(cufftDoubleComplex));
+    #else
+        mesh->kDensity = (fftw_complex*) fftw_alloc_complex(fft_size);
+        mesh->kPot     = (fftw_complex*) fftw_alloc_complex(fft_size);
+    #endif
 
     // allocate memory for the real-space arrays
     mesh->density = (double*) allocate_aligned(size * sizeof(double));
@@ -262,10 +273,26 @@ Mesh* init_mesh(vec2_t Ngrid) {
     }
 
     // zero-initialize real-space arrays for deterministic transforms
+    #ifdef OMP
+    #pragma omp parallel for simd schedule(static)
+    for (int i = 0; i < size; i++) {
+        mesh->density[i] = 0.0;
+        mesh->pot[i] = 0.0;
+    }
+    #else
     memset(mesh->density, 0, size * sizeof(double));
     memset(mesh->pot, 0, size * sizeof(double));
+    #endif
 
     // back and forth FFT plans (note: FFTW takes int dimensions)
+    #ifdef USE_GPU
+        if (cufftPlan2d(&mesh->plan_fwd, Ngrid[_row_], Ngrid[_col_], CUFFT_D2Z) != CUFFT_SUCCESS) {
+             printf("Error creating cuFFT FWD plan\n"); return NULL;
+        }
+        if (cufftPlan2d(&mesh->plan_bck, Ngrid[_row_], Ngrid[_col_], CUFFT_Z2D) != CUFFT_SUCCESS) {
+             printf("Error creating cuFFT BCK plan\n"); return NULL;
+        }
+    #else
     mesh->fft_real_fwd = fftw_plan_dft_r2c_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->density, mesh->kDensity, FFTW_MEASURE);
     mesh->fft_real_bck = fftw_plan_dft_c2r_2d((int) Ngrid[_row_], (int) Ngrid[_col_], mesh->kPot, mesh->pot, FFTW_MEASURE);
     if (!mesh->fft_real_fwd || !mesh->fft_real_bck) {
@@ -273,6 +300,7 @@ Mesh* init_mesh(vec2_t Ngrid) {
         destroy_mesh(mesh);
         return NULL;
     }
+    #endif
 
     return mesh;
 }
@@ -281,10 +309,17 @@ int destroy_mesh(Mesh* mesh) {
     #ifdef OMP
     fftw_cleanup_threads();
     #endif
-    if (mesh->fft_real_fwd) fftw_destroy_plan(mesh->fft_real_fwd);
-    if (mesh->fft_real_bck) fftw_destroy_plan(mesh->fft_real_bck);
-    if (mesh->kDensity) fftw_free(mesh->kDensity);
-    if (mesh->kPot) fftw_free(mesh->kPot);
+    #ifdef USE_GPU
+        if (mesh->plan_fwd) cufftDestroy(mesh->plan_fwd);
+        if (mesh->plan_bck) cufftDestroy(mesh->plan_bck);
+        if (mesh->kDensity) free(mesh->kDensity);
+        if (mesh->kPot) free(mesh->kPot);
+    #else
+        if (mesh->fft_real_fwd) fftw_destroy_plan(mesh->fft_real_fwd);
+        if (mesh->fft_real_bck) fftw_destroy_plan(mesh->fft_real_bck);
+        if (mesh->kDensity) fftw_free(mesh->kDensity);
+        if (mesh->kPot) fftw_free(mesh->kPot);
+    #endif
     if (mesh->density) free(mesh->density);
     if (mesh->pot) free(mesh->pot);
     if (mesh->forces_x) free(mesh->forces_x);

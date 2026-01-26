@@ -185,7 +185,7 @@ $$
 G_k = - \dfrac{(\Delta x / 2)^2}{[\sin^2(k_x/2)]}
 $$
 
-where $\Delta_x$ is the grid spacing and $k_x = 2\pi / \Delta x_i$ (with $i$ ranìging from 0 to $n_{grid}$) the wave numbers. ...but we will use in a first approach the poor man one.
+where $\Delta_x$ is the grid spacing and $k_x = 2\pi / \Delta x_i$ (with $i$ ranging from 0 to $n_{grid}$) the wave numbers. ...but we will use in a first approach the poor man one.
 
 To implement the potential computation we will use the FFTW 3.x library. The basics are:
 
@@ -304,16 +304,16 @@ More details on the writing of a (3D) PM code can be found in Hockney & Eastwood
 
 ---
 
-Codice scritto in vari file
+Code written in several files
 
-- uno per inizializzare il codice
-- uno per il calcolo della densità
-- uno per il calcolo della forza
-- main.c -> chiama  le funzioni per implementare la pipeline principale
+- one to initialize the code
+- one for density computation
+- one for force computation
+- main.c -> calls the functions to implement the main pipeline
 
-funzione comune per leggere il file di parametri
+common function to read the parameter file
 
-usare makefile per compilare
+use makefile to compile
 
 
 

@@ -2,6 +2,7 @@
 #define RSORT_H
 
 #include "global.h"
+
 #ifdef OMP
 #include <omp.h>
 #endif

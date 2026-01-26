@@ -26,4 +26,12 @@
 - easily parallelized independent loops:
     #pragma omp parallel for
 
+- managed atomic update in estimate density
+
+- increased data locality with touch first policy
+
+## Using GPUs
+
+- #pragma kernels as baseline
+
 - 

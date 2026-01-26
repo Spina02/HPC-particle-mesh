@@ -16,7 +16,9 @@
     #define save_status(...) save_status_bin(__VA_ARGS__)
 #endif
 
+#ifndef OUTPUT_DIR
 #define OUTPUT_DIR "artifacts"
+#endif
 #define OUTPUT_POSITIONS_FILE "positions_%d.%s"
 #define OUTPUT_STATUS_FILE "status_%d.%s"
 

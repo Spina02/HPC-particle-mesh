@@ -1,13 +1,19 @@
 #ifndef GLOBAL_H
 #define GLOBAL_H
 
-#include <fftw3.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #ifdef OMP
-#include <omp.h>
+    #include <omp.h>
 #endif
+#ifdef USE_GPU
+    #include <cufft.h>
+    #include <openacc.h>
+#else
+    #include <fftw3.h>
+#endif
+
 
 // debug print macro
 #ifdef DEBUG
@@ -32,10 +38,26 @@
 #define G_SI 6.67e-11
 extern double G_prime;
 
-typedef unsigned int uint;
+#ifdef FLOAT
+    typedef float real_t;
+    typedef float vec2d_t[2];
+    #ifdef USE_GPU
+        typedef cufftComplex complex_t;
+    #else
+        typedef fftw_complex complex_t;
+    #endif
+#else // DOUBLE
+    typedef double real_t;
+    typedef double vec2d_t[2];
+    #ifdef USE_GPU
+        typedef cufftDoubleComplex complex_t;
+    #else
+        typedef fftw_complex complex_t;
+    #endif
+#endif
 
+typedef unsigned int uint;
 typedef uint vec2_t[2];
-typedef double vec2d_t[2];
 
 typedef struct Particles {
     
@@ -85,14 +107,21 @@ typedef struct Params {
 } Params;
 
 typedef struct Mesh {
-    fftw_complex* restrict kDensity;
-    fftw_complex* restrict kPot;
+    #ifdef USE_GPU
+        cufftDoubleComplex* restrict kDensity;
+        cufftDoubleComplex* restrict kPot;
+        cufftHandle plan_fwd;
+        cufftHandle plan_bck;
+    #else
+        fftw_complex* restrict kDensity;
+        fftw_complex* restrict kPot;
+        fftw_plan fft_real_fwd;
+        fftw_plan fft_real_bck;
+    #endif
     double* restrict density;
     double* restrict pot;
     double* restrict forces_x;
     double* restrict forces_y;
-    fftw_plan fft_real_fwd;
-    fftw_plan fft_real_bck;
     size_t grid_size;
 } Mesh;
 

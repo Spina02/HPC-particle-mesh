@@ -7,21 +7,12 @@ char* get_full_path(char* filename, char* type) {
         return NULL;
     }
 
-    char* output_dir = (char*) malloc(strlen(OUTPUT_DIR) + strlen(METHOD) + strlen(type) + 2);
+    size_t base_len = strlen(OUTPUT_DIR);
+    char* output_dir = (char*) malloc(base_len + strlen(type) + 2);
     strcpy(output_dir, OUTPUT_DIR);
-    strcat(output_dir, "/");
-    strcat(output_dir, METHOD);
-
-    if (mkdir(output_dir, 0755) != 0 && errno != EEXIST) {
-        printf("Error while creating the output directory %s\n", output_dir);
-        free(output_dir);
-        return NULL;
-    }
-
     strcat(output_dir, "/");
     strcat(output_dir, type);
 
-    // Then create the method-specific subdirectory
     if (mkdir(output_dir, 0755) != 0 && errno != EEXIST) {
         printf("Error while creating the output directory %s\n", output_dir);
         free(output_dir);

@@ -1,106 +1,210 @@
-CC = gcc
-LDFLAGS = -lfftw3 -lfftw3_omp -lm
+# ============================================================================
+#                              COMPILER & LINKER
+# ============================================================================
 
-# Directories
+CC = gcc
+LDFLAGS = -lfftw3 -lm
+
+# ============================================================================
+#                              DIRECTORIES
+# ============================================================================
+
 SRC_DIR = src
 INC_DIR = include
-OBJ_DIR_SERIAL = build/serial
-OBJ_DIR_HPC = build/hpc
 BIN_DIR = bin
 OUT_DIR = artifacts
+RES_DIR = results
 
-# Directory targets
-$(OBJ_DIR_SERIAL):
-	mkdir -p $(OBJ_DIR_SERIAL)
+OBJ_DIR_SERIAL = build/serial
+OBJ_DIR_VEC    = build/vec
+OBJ_DIR_HPC    = build/hpc
+OBJ_DIR_GPU    = build/gpu
 
-$(OBJ_DIR_HPC):
-	mkdir -p $(OBJ_DIR_SERIAL) $(OBJ_DIR_HPC)
+# ============================================================================
+#                              SOURCE FILES
+# ============================================================================
 
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+SRCS     = $(wildcard $(SRC_DIR)/*.c)
+HEADERS  = $(wildcard $(INC_DIR)/*.h)
 
-$(OUT_DIR):
-	mkdir -p $(OUT_DIR)
+OBJS_SERIAL = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_SERIAL)/%.o)
+OBJS_VEC    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_VEC)/%.o)
+OBJS_HPC    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_HPC)/%.o)
+OBJS_GPU    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_GPU)/%.o)
 
+# ============================================================================
+#                              TARGETS
+# ============================================================================
+
+TARGET_SERIAL = $(BIN_DIR)/particle-mesh-serial
+TARGET_VEC    = $(BIN_DIR)/particle-mesh-vec
+TARGET_HPC    = $(BIN_DIR)/particle-mesh-hpc
+TARGET_GPU    = $(BIN_DIR)/particle-mesh-gpu
+
+# ============================================================================
+#                              COMPILER FLAGS
+# ============================================================================
+
+# Common flags for all builds
 CFLAGS_COMMON = -Wall -Wextra -Wpedantic -Werror -I$(INC_DIR) -DPOW2GRID
 
-CFLAGS_HPC_COMMON = $(CFLAGS_COMMON) -march=native -mtune=native -ffast-math -flto -fno-math-errno -fno-trapping-math
-CFLAGS_VEC = -DVEC -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops -mprefer-vector-width=512
-            # -fopt-info-vec-optimized -fopt-info-vec-missed
+# HPC optimizations base
+CFLAGS_HPC_BASE = $(CFLAGS_COMMON) -O3 -DNDEBUG \
+                  -march=native -mtune=native \
+                  -ffast-math -flto -fno-math-errno -fno-trapping-math
 
+# Vectorization flags (-fopenmp-simd enables #pragma omp simd without full OpenMP)
+CFLAGS_VEC = -DVEC -fopenmp-simd -ftree-vectorize -funroll-loops -mprefer-vector-width=512
+# Optional: -fopt-info-vec-optimized -fopt-info-vec-missed
+
+# OpenMP flags
 CFLAGS_OMP = -fopenmp -DOMP
+LDFLAGS_OMP = -lfftw3_omp -flto
 
-TARGET = $(BIN_DIR)/particle-mesh
-TARGET_HPC = $(BIN_DIR)/particle-mesh-hpc
+# GPU/OpenACC flags (NVIDIA HPC SDK)
+CFLAGS_GPU  = -I$(INC_DIR) -DPOW2GRID -O3 -fast -acc -gpu=cc80,lineinfo -Minfo=accel -DUSE_GPU
+LDFLAGS_GPU = -cudalib=cufft -lm
 
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_SERIAL)/%.o)
-OBJS_HPC = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_HPC)/%.o)
-HEADERS = $(wildcard $(INC_DIR)/*.h)
+# ============================================================================
+#                              BUILD RULES
+# ============================================================================
 
-# Default target
-all: release hpc
+.PHONY: all debug serial vec omp hpc gpu test clean clean-out clean-serial clean-vec clean-hpc clean-gpu run-serial run-vec run-hpc run-gpu plot plot-results \
+        sync-up sync-down get-results
 
-debug: CFLAGS = $(CFLAGS_COMMON) -g -O0 -DDEBUG $(CFLAGS_EXTRA)
-debug: $(TARGET)
+all: serial vec hpc gpu
 
-release: CFLAGS = $(CFLAGS_COMMON) -O3 -DNDEBUG $(CFLAGS_EXTRA)
-release: $(TARGET)
+# ---------------------------- Serial Builds ---------------------------------
 
-vec: CFLAGS_HPC = $(CFLAGS_HPC_COMMON) -O3 -DNDEBUG $(CFLAGS_VEC) $(CFLAGS_EXTRA)
-vec: LDFLAGS += -flto
-vec: $(TARGET_HPC)
+debug: CFLAGS = $(CFLAGS_COMMON) -g -O0 -DDEBUG -DOUTPUT_DIR=\"artifacts/serial\" $(CFLAGS_EXTRA)
+debug: $(TARGET_SERIAL)
 
-vec-aligned: CFLAGS_HPC = $(CFLAGS_HPC_COMMON) -O3 -DNDEBUG -DALIGNED $(CFLAGS_VEC) $(CFLAGS_EXTRA)
-vec-aligned: LDFLAGS += -flto
-vec-aligned: $(TARGET_HPC)
+serial: CFLAGS = $(CFLAGS_COMMON) -O3 -DNDEBUG -DOUTPUT_DIR=\"artifacts/serial\" $(CFLAGS_EXTRA)
+serial: $(TARGET_SERIAL)
 
-omp: CFLAGS_HPC = $(CFLAGS_HPC_COMMON) -O3 -DNDEBUG -DALIGNED $(CFLAGS_OMP) $(CFLAGS_EXTRA)
-omp: LDFLAGS += -lfftw3_omp -flto
+# ----------------------------- HPC Builds -----------------------------------
+
+# vec: CC = gcc
+# vec: CFLAGS_VEC_BUILD = $(CFLAGS_HPC_BASE) $(CFLAGS_VEC) -DOUTPUT_DIR=\"artifacts/vec\" $(CFLAGS_EXTRA)
+# vec: LDFLAGS = -lfftw3 -lm -flto
+# vec: $(TARGET_VEC)
+
+vec: CC = gcc
+vec: CFLAGS_VEC_BUILD = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) -DOUTPUT_DIR=\"artifacts/vec\" $(CFLAGS_EXTRA)
+vec: LDFLAGS = -lfftw3 -lm -flto
+vec: $(TARGET_VEC)
+
+omp: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_OMP) -DOUTPUT_DIR=\"artifacts/hpc\" $(CFLAGS_EXTRA)
+omp: LDFLAGS = -lfftw3 -lm $(LDFLAGS_OMP)
 omp: $(TARGET_HPC)
 
-hpc: CFLAGS_HPC = $(CFLAGS_HPC_COMMON) -O3 -DNDEBUG -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) $(CFLAGS_EXTRA)
-hpc: LDFLAGS += -lfftw3_omp -flto
+hpc: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) -DOUTPUT_DIR=\"artifacts/hpc\" $(CFLAGS_EXTRA)
+hpc: LDFLAGS = -lfftw3 -lm $(LDFLAGS_OMP)
 hpc: $(TARGET_HPC)
 
-hpc-aligned: CFLAGS_HPC = $(CFLAGS_HPC_COMMON) -O3 -DNDEBUG -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) $(CFLAGS_EXTRA)
-hpc-aligned: LDFLAGS += -lfftw3_omp
-hpc-aligned: $(TARGET_HPC)
+# ----------------------------- GPU Builds -----------------------------------
 
-# Compile target
-$(TARGET): $(OBJS) | $(BIN_DIR)
+gpu: CC = nvc
+gpu: CFLAGS_GPU_BUILD = $(CFLAGS_GPU) -DOUTPUT_DIR=\"artifacts/gpu\" $(CFLAGS_EXTRA)
+gpu: LDFLAGS = $(LDFLAGS_GPU)
+gpu: $(TARGET_GPU)
+
+test:
+	chmod +x scripts/*.sh && ./scripts/all.sh
+
+# ============================================================================
+#                              LINKING
+# ============================================================================
+
+$(TARGET_SERIAL): $(OBJS_SERIAL) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# Compile target HPC
+$(TARGET_VEC): $(OBJS_VEC) | $(BIN_DIR)
+	$(CC) $(CFLAGS_VEC_BUILD) -o $@ $^ $(LDFLAGS)
+
 $(TARGET_HPC): $(OBJS_HPC) | $(BIN_DIR)
 	$(CC) $(CFLAGS_HPC) -o $@ $^ $(LDFLAGS)
 
-# Compile object files
+$(TARGET_GPU): $(OBJS_GPU) | $(BIN_DIR)
+	$(CC) $(CFLAGS_GPU_BUILD) -o $@ $^ $(LDFLAGS)
+
+# ============================================================================
+#                              COMPILATION
+# ============================================================================
+
 $(OBJ_DIR_SERIAL)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_SERIAL)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Compile object files for HPC
+$(OBJ_DIR_VEC)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_VEC)
+	$(CC) $(CFLAGS_VEC_BUILD) -c $< -o $@
+
 $(OBJ_DIR_HPC)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_HPC)
 	$(CC) $(CFLAGS_HPC) -c $< -o $@
 
-# Clean targets
+$(OBJ_DIR_GPU)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_GPU)
+	$(CC) $(CFLAGS_GPU_BUILD) -c $< -o $@
+
+# ============================================================================
+#                              DIRECTORIES
+# ============================================================================
+
+$(OBJ_DIR_SERIAL):
+	mkdir -p $@
+
+$(OBJ_DIR_VEC):
+	mkdir -p $@
+
+$(OBJ_DIR_HPC):
+	mkdir -p $@
+
+$(OBJ_DIR_GPU):
+	mkdir -p $@
+
+$(BIN_DIR):
+	mkdir -p $@
+
+$(OUT_DIR):
+	mkdir -p $@
+
+# ============================================================================
+#                              UTILITIES
+# ============================================================================
+
 clean:
-	rm -rf $(OBJ_DIR_SERIAL) $(OBJ_DIR_HPC) $(BIN_DIR) 
+	rm -rf build $(BIN_DIR)
+clean-serial:
+	rm -rf build/serial $(BIN_DIR)/particle-mesh-serial
+clean-vec:
+	rm -rf build/vec $(BIN_DIR)/particle-mesh-vec
+clean-hpc:
+	rm -rf build/hpc $(BIN_DIR)/particle-mesh-hpc
+clean-gpu:
+	rm -rf build/gpu $(BIN_DIR)/particle-mesh-gpu
 
 clean-out:
-	rm -rf $(OUT_DIR)
+	rm -rf $(OUT_DIR) $(RES_DIR)
 
-# Run target
-run: $(TARGET) params.conf
-	./$(TARGET) params.conf
+run-serial: $(TARGET_SERIAL) params.conf
+	./$(TARGET_SERIAL) params.conf
+
+run-vec: $(TARGET_VEC) params.conf
+	./$(TARGET_VEC) params.conf
 
 run-hpc: $(TARGET_HPC) params.conf
 	./$(TARGET_HPC) params.conf
 
+run-gpu: $(TARGET_GPU) params.conf
+	./$(TARGET_GPU) params.conf
+
 plot:
 	python plot.py
 
-######################## Rsync targets #########################
+plot-results:
+	python plot_results.py
+
+# ============================================================================
+#                              RSYNC (Leonardo)
+# ============================================================================
 
 LEO_HOST = login.leonardo.cineca.it
 LEO_USER = aspinel1
@@ -115,6 +219,7 @@ sync-up:
 sync-down:
 	rsync $(RSYNC_FLAGS) $(LEO_USER)@$(LEO_HOST):$(LEO_PATH) ./
 
-# Download only the artifacts/output folder
+# Download $(RES_DIR) (CSV and plots) from remote
 get-results:
-	rsync -avzP $(LEO_USER)@$(LEO_HOST):$(LEO_PATH)/artifacts/*.csv ./results
+	mkdir -p $(RES_DIR)
+	rsync -avzP $(LEO_USER)@$(LEO_HOST):$(LEO_PATH)/$(RES_DIR)/ $(RES_DIR)/

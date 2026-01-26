@@ -8,8 +8,8 @@ double* estimate_density(Mesh* mesh, GridParams* params, Particles* particles) {
     double cellSize_col = params->BoxSize[_col_] / N_cols;
     double cellSize_row = params->BoxSize[_row_] / N_rows;
     double mass = particles->mass;
-    
-    #if defined(VEC) && defined(ALIGNED)
+
+    #if defined(VEC) && defined(ALIGNED) && !defined(USE_GPU)
     double* restrict density = __builtin_assume_aligned(mesh->density, ALIGNMENT);
     double* restrict pos_col = __builtin_assume_aligned(particles->pos_col, ALIGNMENT);
     double* restrict pos_row = __builtin_assume_aligned(particles->pos_row, ALIGNMENT);
@@ -20,34 +20,34 @@ double* estimate_density(Mesh* mesh, GridParams* params, Particles* particles) {
     #endif
     
     // initialize density array
-    #ifdef OMP
-        uint grid_size = N_cols * N_rows;
-        #pragma omp parallel for schedule(static)
+    uint grid_size = N_cols * N_rows;
+    
+    #if defined(OMP) || defined(USE_GPU)
+        #if defined(USE_GPU)
+        #pragma acc parallel loop present(density[0:grid_size])
+        #elif defined(OMP)
+        #pragma omp parallel for simd schedule(static)
+        #endif
         for (uint i = 0; i < grid_size; i++) {
             density[i] = 0.0;
         }
     #else
         memset(density, 0, grid_size * sizeof(double));
     #endif
-    
-    #if defined(OMP)
-    double* local_density;  // private array for each thread
-    #pragma omp parallel private(local_density)
-    {
-        local_density = calloc(grid_size, sizeof(double));
-    #endif
 
         // iterate over particles
-        #if defined(VEC) && defined(ALIGNED) && defined(OMP)
-            #pragma omp for simd schedule(static) aligned(density : ALIGNMENT)
+        #if defined(USE_GPU)
+            #pragma acc parallel loop present(density[0:grid_size], pos_col[0:N_particles], pos_row[0:N_particles])
+        #elif defined(VEC) && defined(ALIGNED) && defined(OMP)
+            #pragma omp parallel for simd schedule(static) aligned(density : ALIGNMENT)
         #elif defined(VEC) && defined(ALIGNED)
             #pragma omp simd aligned(density : ALIGNMENT)
         #elif defined(VEC) && defined(OMP)
-            #pragma omp for simd schedule(static)
+            #pragma omp parallel for simd schedule(static)
         #elif defined(VEC)
             #pragma omp simd
         #elif defined(OMP)
-            #pragma omp for schedule(static)
+            #pragma omp parallel for schedule(static)
         #endif
         for (uint i = 0; i < N_particles; i++) {
 
@@ -69,35 +69,23 @@ double* estimate_density(Mesh* mesh, GridParams* params, Particles* particles) {
             wrow[1] = TSC_weight(fabs(grid_row - js[1]));
             wrow[2] = TSC_weight(fabs(grid_row - js[2]));
 
-            #pragma GCC unroll 3
+            PRAGMA_UNROLL
             for (int jj = 0; jj < 3; jj++) {
                 int row_idx = fast_mod(js[jj], N_rows);
-                #pragma GCC unroll 3
+                PRAGMA_UNROLL
                 for (int ii = 0; ii < 3; ii++) {
                     int col_idx = fast_mod(is[ii], N_cols);
                     int cell_idx = row_idx * N_cols + col_idx;
 
-                    #if defined(OMP)
-                    local_density[cell_idx] += mass * wcol[ii] * wrow[jj];
-                    #else
-                    density[cell_idx] += mass * wcol[ii] * wrow[jj];
+                    #if defined(USE_GPU)
+                    #pragma acc atomic update
+                    #elif defined(OMP)
+                    #pragma omp atomic update relaxed
                     #endif
+                    density[cell_idx] += mass * wcol[ii] * wrow[jj];
                 }
             }
         }
-
-        #if defined(OMP)
-        #pragma omp for schedule(static)
-        for (uint i = 0; i < grid_size; i++) {
-            #pragma omp atomic
-            density[i] += local_density[i];
-        }
-        free(local_density);
-        #endif
-
-    #if defined(OMP)
-    } // end of omp parallel
-    #endif
     return density;
 }
 
@@ -107,13 +95,21 @@ void compute_potential(Mesh* mesh, vec2_t Ngrid, vec2d_t BoxSize) {
     uint N_cols = Ngrid[_col_] / 2 + 1;
     uint N_rows = Ngrid[_row_];
 
+    #ifdef USE_GPU
+    cufftDoubleComplex* kDensity = mesh->kDensity;
+    cufftDoubleComplex* kPot = mesh->kPot;
+    #else
+    fftw_complex* kDensity = mesh->kDensity;
+    fftw_complex* kPot = mesh->kPot;
+    #endif
+
     double norm_col = 2 * M_PI / BoxSize[_col_];
     double norm_row = 2 * M_PI / BoxSize[_row_];
 
     double half_delta_col = 0.5 * BoxSize[_col_] / Ngrid[_col_];
     double half_delta_row = 0.5 * BoxSize[_row_] / Ngrid[_row_];
-    double half_delta_col_sq = half_delta_col * half_delta_col;
-    double half_delta_row_sq = half_delta_row * half_delta_row;
+    double inv_half_delta_col_sq = 1 / (half_delta_col * half_delta_col);
+    double inv_half_delta_row_sq = 1 / (half_delta_row * half_delta_row);
 
     double k_col, k_row, green_func, sin_col, sin_row, sin2_col, sin2_row, denom;
 
@@ -121,7 +117,9 @@ void compute_potential(Mesh* mesh, vec2_t Ngrid, vec2d_t BoxSize) {
     double G_prime_4_PI = -(4 * M_PI * G_prime);
     double N_rows_half = N_rows / 2.0;
 
-    #if defined(VEC) && defined(OMP)
+    #if defined(USE_GPU)
+        #pragma acc parallel loop present(kDensity[0:N_rows * N_cols], kPot[0:N_rows * N_cols])
+    #elif defined(VEC) && defined(OMP)
         #pragma omp parallel for simd schedule(static) private(k_col, k_row, sin_col, sin_row, sin2_col, sin2_row, denom)
     #elif defined(OMP)
         #pragma omp parallel for schedule(static) private(k_col, k_row, sin_col, sin_row, sin2_col, sin2_row, denom)
@@ -136,7 +134,9 @@ void compute_potential(Mesh* mesh, vec2_t Ngrid, vec2d_t BoxSize) {
         sin_row = sin(k_row * half_delta_row);
         sin2_row = sin_row * sin_row;
         
-        #if defined(VEC)
+        #if defined(USE_GPU)
+            #pragma acc loop
+        #elif defined(VEC)
             #pragma omp simd
         #endif
         for (uint j=0; j<N_cols; j++) {
@@ -148,20 +148,33 @@ void compute_potential(Mesh* mesh, vec2_t Ngrid, vec2d_t BoxSize) {
             sin_col = sin(k_col * half_delta_col);
             sin2_col = sin_col * sin_col;
 
-            denom = sin2_col/half_delta_col_sq + sin2_row/half_delta_row_sq;
+            denom = sin2_col*inv_half_delta_col_sq + sin2_row*inv_half_delta_row_sq;
             denom = MAX(denom, 1e-14);
             
             green_func = G_prime_4_PI / denom;
 
-            mesh->kPot[idx][0] = green_func * mesh->kDensity[idx][0];
-            mesh->kPot[idx][1] = green_func * mesh->kDensity[idx][1];
+            #ifdef USE_GPU
+                kPot[idx].x = green_func * kDensity[idx].x;
+                kPot[idx].y = green_func * kDensity[idx].y;
+            #else
+                kPot[idx][0] = green_func * kDensity[idx][0];
+                kPot[idx][1] = green_func * kDensity[idx][1];
+            #endif
         }
     }
 }
 
 void compute_forces(Mesh* mesh, vec2d_t BoxSize, vec2_t Ngrid) {
     uint prev_col, next_col, prev_row, next_row, row_idx, idx, i, j;
-    double* pot = __builtin_assume_aligned(mesh->pot, ALIGNMENT);
+#if defined(VEC) && defined(ALIGNED) && !defined(USE_GPU)
+    double* restrict pot = __builtin_assume_aligned(mesh->pot, ALIGNMENT);
+    double* restrict forces_x = __builtin_assume_aligned(mesh->forces_x, ALIGNMENT);
+    double* restrict forces_y = __builtin_assume_aligned(mesh->forces_y, ALIGNMENT);
+#else
+    double* pot = mesh->pot;
+    double* forces_x = mesh->forces_x;
+    double* forces_y = mesh->forces_y;
+#endif
 
     uint N_cols = Ngrid[_col_];
     uint N_rows = Ngrid[_row_];
@@ -169,7 +182,9 @@ void compute_forces(Mesh* mesh, vec2d_t BoxSize, vec2_t Ngrid) {
     double den_col_inv = N_cols / (2 * BoxSize[_col_]);
     double den_row_inv = N_rows / (2 * BoxSize[_row_]);
 
-    #if defined(OMP)
+    #if defined(USE_GPU)
+        #pragma acc parallel loop present(pot[0:N_rows*N_cols], forces_x[0:N_rows*N_cols], forces_y[0:N_rows*N_cols])
+    #elif defined(OMP)
         #pragma omp parallel for schedule(static) private(prev_row, next_row, prev_col, next_col, row_idx, idx, i, j)
     #endif
     for (i = 0; i < N_rows; i++) {
@@ -190,8 +205,8 @@ void compute_forces(Mesh* mesh, vec2d_t BoxSize, vec2_t Ngrid) {
             next_col = fast_mod(j + 1, N_cols);
 
             // central difference approximation of the gradient
-            mesh->forces_x[idx] = (pot[row_idx + prev_col] - pot[row_idx + next_col]) * den_col_inv;
-            mesh->forces_y[idx] = (pot[prev_row * N_cols + j] - pot[next_row * N_cols + j]) * den_row_inv;
+            forces_x[idx] = (pot[row_idx + prev_col] - pot[row_idx + next_col]) * den_col_inv;
+            forces_y[idx] = (pot[prev_row * N_cols + j] - pot[next_row * N_cols + j]) * den_row_inv;
         }
     }
 }
@@ -202,8 +217,12 @@ void interpolate_forces(Mesh* mesh, Particles* particles, vec2d_t BoxSize, vec2_
     
     // initialize the forces on the particles
     uint N_particles = particles->N;
-    #ifdef OMP
+    #if defined(USE_GPU) && defined(OMP)
+    #if defined(USE_GPU)
+        #pragma acc parallel loop present(particles->acc_col[0:N_particles], particles->acc_row[0:N_particles])
+    #elif defined(OMP)
         #pragma omp parallel for schedule(static)
+    #endif
         for (uint i = 0; i < N_particles; i++) {
             particles->acc_col[i] = 0.0;
             particles->acc_row[i] = 0.0;
@@ -213,7 +232,7 @@ void interpolate_forces(Mesh* mesh, Particles* particles, vec2d_t BoxSize, vec2_
         memset(particles->acc_row, 0, N_particles * sizeof(double));
     #endif
 
-    #if defined(VEC) && defined(ALIGNED)
+    #if defined(VEC) && defined(ALIGNED) && !defined(USE_GPU)
         double* restrict pos_col = __builtin_assume_aligned(particles->pos_col, ALIGNMENT);
         double* restrict pos_row = __builtin_assume_aligned(particles->pos_row, ALIGNMENT);
         double* restrict acc_col = __builtin_assume_aligned(particles->acc_col, ALIGNMENT);
@@ -236,12 +255,18 @@ void interpolate_forces(Mesh* mesh, Particles* particles, vec2d_t BoxSize, vec2_
     double cellSize_row_inv = N_rows / BoxSize[_row_];
     // mass is the same for all particles
     double mass_inv = 1.0 / particles->mass;
-
+    
     double max_acc_col = 0.0;
     double max_acc_row = 0.0;
     
     // iterate over particles
-    #if defined(VEC) && defined(ALIGNED) && defined(OMP)
+    #if defined(USE_GPU)
+        uint grid_size = N_cols * N_rows;
+        #pragma acc parallel loop present(pos_col[0:N_particles], pos_row[0:N_particles], \
+            acc_col[0:N_particles], acc_row[0:N_particles], \
+            forces_x[0:grid_size], forces_y[0:grid_size]) \
+            reduction(max:max_acc_col, max_acc_row)
+    #elif defined(VEC) && defined(ALIGNED) && defined(OMP)
         #pragma omp parallel for simd schedule(guided) reduction(max:max_acc_col, max_acc_row) aligned(pos_col, pos_row, acc_col, acc_row : ALIGNMENT)
     #elif defined(VEC) && defined(ALIGNED)
         #pragma omp simd reduction(max:max_acc_col, max_acc_row) aligned(pos_col, pos_row, acc_col, acc_row : ALIGNMENT)
@@ -274,10 +299,10 @@ void interpolate_forces(Mesh* mesh, Particles* particles, vec2d_t BoxSize, vec2_
         wrow[1] = TSC_weight(fabs(grid_row - js[1]));
         wrow[2] = TSC_weight(fabs(grid_row - js[2]));
 
-        #pragma GCC unroll 3
+        PRAGMA_UNROLL
         for (int jj = 0; jj < 3; jj++) {
             int row_idx = fast_mod(js[jj], N_rows);
-            #pragma GCC unroll 3
+            PRAGMA_UNROLL
             for (int ii = 0; ii < 3; ii++) {
                 int col_idx = fast_mod(is[ii], N_cols);
                 int cell_idx = row_idx * N_cols + col_idx;
@@ -300,7 +325,7 @@ void interpolate_forces(Mesh* mesh, Particles* particles, vec2d_t BoxSize, vec2_
 
 void kick_particles(Particles* particles, double dt) {
     uint N_particles = particles->N;
-    #if defined(VEC) && defined(ALIGNED)
+    #if defined(VEC) && defined(ALIGNED) && !defined(USE_GPU)
     double* restrict vel_col = __builtin_assume_aligned(particles->vel_col, ALIGNMENT);
     double* restrict vel_row = __builtin_assume_aligned(particles->vel_row, ALIGNMENT);
     double* restrict acc_col = __builtin_assume_aligned(particles->acc_col, ALIGNMENT);
@@ -313,8 +338,12 @@ void kick_particles(Particles* particles, double dt) {
     #endif
 
     // auto vectorize 32, 16 byte vecs (versioned)
-    #if defined(OMP) && defined(VEC) && defined(ALIGNED)
-        #pragma omp parallel for simd schedule(static) aligned(vel_col, vel_row, acc_col, acc_row : ALIGNMENT)
+    #if defined(USE_GPU)
+        #pragma acc parallel loop \
+        present(vel_col[0:N_particles], vel_row[0:N_particles], \
+                acc_col[0:N_particles], acc_row[0:N_particles])
+    #elif defined(OMP) && defined(VEC) && defined(ALIGNED)
+        #pragma omp parallel for simd schedule(static) aligned(vel_col, vel_row, acc_col, acc_row : ALIGNMENT) 
     #elif defined(OMP) && defined(VEC)
         #pragma omp parallel for simd schedule(static)
     #elif defined(OMP)
@@ -332,7 +361,7 @@ void kick_particles(Particles* particles, double dt) {
 
 void drift_particles(Particles* particles, double dt, vec2d_t BoxSize) {
     uint N_particles = particles->N;
-    #if defined(VEC) && defined(ALIGNED)
+    #if defined(VEC) && defined(ALIGNED) && !defined(USE_GPU)
     double* restrict pos_col = __builtin_assume_aligned(particles->pos_col, ALIGNMENT);
     double* restrict pos_row = __builtin_assume_aligned(particles->pos_row, ALIGNMENT);
     double* restrict vel_col = __builtin_assume_aligned(particles->vel_col, ALIGNMENT);
@@ -349,7 +378,10 @@ void drift_particles(Particles* particles, double dt, vec2d_t BoxSize) {
     double pos_col_i, pos_row_i;
     // bool out_low, out_high;
 
-    #if defined(OMP) && defined(VEC) && defined(ALIGNED)
+    #if defined(USE_GPU)
+        #pragma acc parallel loop present(pos_col[0:N_particles], pos_row[0:N_particles], \
+                vel_col[0:N_particles], vel_row[0:N_particles])
+    #elif defined(OMP) && defined(VEC) && defined(ALIGNED)
         #pragma omp parallel for simd schedule(guided) aligned(pos_col, pos_row, vel_col, vel_row : ALIGNMENT)
     #elif defined(OMP) && defined(VEC)
         #pragma omp parallel for simd schedule(guided)
@@ -372,16 +404,23 @@ void drift_particles(Particles* particles, double dt, vec2d_t BoxSize) {
     }
 }
 
-// Funzione di comparazione per qsort
-// int compare_sort_items(const void *a, const void *b) {
-//     uint ca = ((SortItem *)a)->cell_index;
-//     uint cb = ((SortItem *)b)->cell_index;
-//     if (ca < cb) return -1;
-//     if (ca > cb) return 1;
-//     return 0;
-// }
+// Comparison function for qsort
+#ifndef OMP
+int compare_sort_items(const void *a, const void *b) {
+    uint ca = ((SortItem *)a)->cell_index;
+    uint cb = ((SortItem *)b)->cell_index;
+    if (ca < cb) return -1;
+    if (ca > cb) return 1;
+    return 0;
+}
+#endif
 
-void reorder_particles(Particles* p, GridParams* grid) {
+void reorder_particles(Particles* p, GridParams* grid, double* tmp_arrays) {
+    // should not be used with gpu:
+    #ifdef USE_GPU
+    printf("reorder_particles is on CPU, should not be used with gpu\n");
+    exit(1);
+    #endif
     uint N = p->N;
     SortItem *items = malloc(N * sizeof(SortItem));
     // Radix sort needs a temporary buffer of the same size as the original
@@ -403,16 +442,19 @@ void reorder_particles(Particles* p, GridParams* grid) {
     }
 
     // Order particles 
+    #if defined(OMP)
     parallel_radix_sort(items, items_tmp, N);
-    // qsort(items, N, sizeof(SortItem), compare_sort_items);
+    #else
+    qsort(items, N, sizeof(SortItem), compare_sort_items);
+    #endif
 
     // Reorder particles' arrays
-    double *tmp_pos_col = malloc(N * sizeof(double));
-    double *tmp_pos_row = malloc(N * sizeof(double));
-    double *tmp_vel_col = malloc(N * sizeof(double));
-    double *tmp_vel_row = malloc(N * sizeof(double));
-    double *tmp_acc_col = malloc(N * sizeof(double));
-    double *tmp_acc_row = malloc(N * sizeof(double));
+    double *tmp_pos_col = tmp_arrays;
+    double *tmp_pos_row = tmp_arrays + N;
+    double *tmp_vel_col = tmp_arrays + 2 * N;
+    double *tmp_vel_row = tmp_arrays + 3 * N;
+    double *tmp_acc_col = tmp_arrays + 4 * N;
+    double *tmp_acc_row = tmp_arrays + 5 * N;
 
     #if defined(OMP)
         #pragma omp parallel for schedule(static)
@@ -441,9 +483,6 @@ void reorder_particles(Particles* p, GridParams* grid) {
     }
 
     // Free temporary arrays
-    free(tmp_pos_col); free(tmp_pos_row);
-    free(tmp_vel_col); free(tmp_vel_row);
-    free(tmp_acc_col); free(tmp_acc_row);
     free(items);
     free(items_tmp);
 }
