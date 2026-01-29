@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# =======================================================
+# -------------------------------------------------------
 #            HPC Execution - Strong Scaling
-# =======================================================
+# -------------------------------------------------------
 # Strong scaling: fixed problem size, increasing threads
 
 export JOB_NAME="pm-strong-scaling"
@@ -16,6 +16,10 @@ PARTITION=dcgp_usr_prod
 EXEC=./bin/particle-mesh-hpc
 CONF=params.conf
 
+# Propagate USE_FLOAT (default 0) down to Makefile
+USE_FLOAT_VALUE=${USE_FLOAT:-0}
+echo ">>> Using USE_FLOAT=${USE_FLOAT_VALUE} for HPC strong-scaling build (if compiled)"
+
 # Remove old CSV to start fresh
 rm -f $TIMING_CSV
 
@@ -25,7 +29,7 @@ module load fftw/3.3.10--openmpi--4.1.6--gcc--12.2.0-spack0.22
 
 if [ "$COMPILE" = TRUE ]; then
     echo "Compiling on compute node..."
-    srun -N1 -n1 -c8 --mem=8GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-hpc hpc
+    srun -N1 -n1 -c8 --mem=8GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-hpc hpc USE_FLOAT=${USE_FLOAT_VALUE}
 fi
 
 if [ $? -ne 0 ]; then

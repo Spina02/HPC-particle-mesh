@@ -1,10 +1,9 @@
 #include "rsort.h"
 #include <string.h>
 
-#ifndef USE_GPU
 void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     int max_threads = 1;
-    #ifdef OMP
+    #ifdef USE_OMP
     max_threads = omp_get_max_threads();
     #endif
 
@@ -22,18 +21,18 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     for (int shift = 0; shift < 32; shift += RADIX_BITS) {
         
         // 1: compute histograms
-        #if defined(OMP)
+        #if defined(USE_OMP)
         #pragma omp parallel
         #endif
         {
-            #if defined(OMP)
+            #if defined(USE_OMP)
             int tid = omp_get_thread_num();
             #else
             int tid = 0;
             #endif
             memset(histograms[tid], 0, RADIX_BUCKETS * sizeof(uint));
 
-            #if defined(OMP)
+            #if defined(USE_OMP)
             #pragma omp for schedule(static)
             #endif
             for(uint i = 0; i < N; i++) {
@@ -55,17 +54,17 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
         }
 
         // 3. reorder particles
-        #if defined(OMP)
+        #if defined(USE_OMP)
         #pragma omp parallel
         #endif
         {
-            #if defined(OMP)
+            #if defined(USE_OMP)
             int tid = omp_get_thread_num();
             #else
             int tid = 0;
             #endif
            
-            #if defined(OMP)
+            #if defined(USE_OMP)
             #pragma omp for schedule(static)
             #endif
             for(uint i = 0; i < N; i++) {
@@ -90,10 +89,3 @@ void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
     }
     free(histograms);
 }
-#endif
-
-#ifdef USE_GPU
-void parallel_radix_sort(SortItem *src, SortItem *dst, uint N) {
-    // TODO: implement GPU version
-}
-#endif

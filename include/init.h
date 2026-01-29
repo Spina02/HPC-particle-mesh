@@ -9,10 +9,10 @@
 // function to read the parameters from a file
 Params* read_params(int argc, char** argv);
 
-double compute_Gprime(NormalizationParams* norm);
+real_t compute_Gprime(NormalizationParams* norm);
 
 Particles* init_particles(Params* params);
-void place_particles(Particles* particles, vec2d_t BoxSize, double A_deltaPar);
+void place_particles(Particles* particles, vec2d_t BoxSize, real_t A_deltaPar);
 int destroy_particles(Particles* particles);
 
 Mesh* init_mesh(vec2_t Ngrid);

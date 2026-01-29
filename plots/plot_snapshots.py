@@ -26,8 +26,9 @@ def read_params(params_path="params.conf"):
     return NgridX, NgridY, BoxSizeX, BoxSizeY
 
 
-def list_snapshots(method, kind="status", format="bin"):
-    pattern = os.path.join(OUT_DIR, method, kind, f"{kind}_*.{format}")
+def list_snapshots(backend, kind="status"):
+    """List snapshot files (binary) for a given backend and kind."""
+    pattern = os.path.join(OUT_DIR, backend, kind, f"{kind}_*.bin")
     files = []
     for path in glob.glob(pattern):
         try:
@@ -38,15 +39,11 @@ def list_snapshots(method, kind="status", format="bin"):
     return [p for _, p in sorted(files, key=lambda x: x[0])]
 
 
-def load_status(path, NgridY, NgridX, field, format="bin"):
-    if format == "txt":
-        data = np.loadtxt(path, ndmin=1, dtype=float)
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
-    else:
-        data = np.fromfile(path, dtype=np.float64)
-        # Binary data is flat; reshape to (N_cells, 4) for the 4 columns
-        data = data.reshape(-1, 4)
+def load_status(path, NgridY, NgridX, field):
+    """Load a status_*.bin snapshot and extract the requested field."""
+    data = np.fromfile(path, dtype=np.float64)
+    # Binary data is flat; reshape to (N_cells, 4) for the 4 columns
+    data = data.reshape(-1, 4)
     
     if field == "density":
         return data[:, 0].reshape((NgridY, NgridX))
@@ -59,23 +56,21 @@ def load_status(path, NgridY, NgridX, field, format="bin"):
         raise ValueError("field must be one of: density, potential, force")
 
 
-def maybe_load_positions(path, format="bin"):
+def maybe_load_positions(path):
+    """Load positions_*.bin if present (returns x, y or (None, None))."""
     if not os.path.exists(path):
         return None, None
-    if format == "txt":
-        pts = np.loadtxt(path)
-        if pts.ndim == 1:
-            pts = pts.reshape(1, -1)
-    else:
-        pts = np.fromfile(path, dtype=np.float64)
-        # Binary data is flat; reshape to (N_particles, 2) for x, y columns
-        pts = pts.reshape(-1, 2)
+    pts = np.fromfile(path, dtype=np.float64)
+    # Binary data is flat; reshape to (N_particles, 2) for x, y columns
+    pts = pts.reshape(-1, 2)
     return pts[:, 0], pts[:, 1]
 
 
 def render_single_frame(args):
     """Render a single frame - designed for multiprocessing"""
-    path, idx, field, scatter, cmap, vmin, vmax, format, NgridX, NgridY, BoxSizeX, BoxSizeY, positions_template, x_edges, y_edges = args
+    (path, idx, field, scatter, vmin, vmax,
+     NgridX, NgridY, BoxSizeX, BoxSizeY,
+     positions_template, x_edges, y_edges) = args
     
     # Use Agg backend for multiprocessing
     import matplotlib
@@ -84,16 +79,19 @@ def render_single_frame(args):
     
     fig, ax = plt.subplots(figsize=(15, 15))
 
+    # Fixed colormap (no CLI override)
+    cmap = "viridis"
+
     if field == "particles":
-        x_pts, y_pts = maybe_load_positions(path, format)
+        x_pts, y_pts = maybe_load_positions(path)
         if x_pts is None:
             raise SystemExit(f"Missing positions file matching {path}")
-        ax.scatter(x_pts, y_pts, s=1, c="black", alpha=1, linewidths=0, rasterized=True)
+        ax.scatter(x_pts, y_pts, s=10, c="black", alpha=1, linewidths=0, rasterized=True)
     else:
-        grid = load_status(path, NgridY, NgridX, field, format)
+        grid = load_status(path, NgridY, NgridX, field)
         x_pts, y_pts = (None, None)
         if scatter:
-            x_pts, y_pts = maybe_load_positions(positions_template.format(idx), format)
+            x_pts, y_pts = maybe_load_positions(positions_template.format(idx))
 
         mesh = ax.pcolormesh(
             x_edges,
@@ -128,19 +126,19 @@ def render_single_frame(args):
     return frame
 
 
-def render_frames(method, field, scatter, cmap, fps, format):
-    NgridX, NgridY, BoxSizeX, BoxSizeY = read_params()
+def render_frames(backend, field, scatter, fps, params_path="params.conf"):
+    NgridX, NgridY, BoxSizeX, BoxSizeY = read_params(params_path)
     if field == "particles":
-        position_files = list_snapshots(method, "positions", format)
+        position_files = list_snapshots(backend, "positions")
         if not position_files:
-            raise SystemExit(f"No snapshots found at {OUT_DIR}/{method}/positions/positions_*.{format}")
+            raise SystemExit(f"No snapshots found at {OUT_DIR}/{backend}/positions/positions_*.bin")
         status_files = position_files
     else:
-        status_files = list_snapshots(method, "status", format)
+        status_files = list_snapshots(backend, "status")
         if not status_files:
-            raise SystemExit(f"No snapshots found at {OUT_DIR}/{method}/status/status_*.{format}")
+            raise SystemExit(f"No snapshots found at {OUT_DIR}/{backend}/status/status_*.bin")
 
-    positions_template = os.path.join(OUT_DIR, method, "positions", f"positions_{{}}.{format}")
+    positions_template = os.path.join(OUT_DIR, backend, "positions", "positions_{}.bin")
     x_edges = np.linspace(0, BoxSizeX, NgridX + 1)
     y_edges = np.linspace(0, BoxSizeY, NgridY + 1)
 
@@ -150,7 +148,7 @@ def render_frames(method, field, scatter, cmap, fps, format):
         print("Computing global color scale...")
         grids = []
         for path in status_files[::max(1, len(status_files)//10)]:  # Sample every 10th file for speed
-            grid = load_status(path, NgridY, NgridX, field, format)
+            grid = load_status(path, NgridY, NgridX, field)
             grids.append(grid)
         all_grids = np.concatenate([g.flatten() for g in grids])
         vmin = np.percentile(all_grids, 1)  # Use percentiles to avoid outliers
@@ -161,7 +159,7 @@ def render_frames(method, field, scatter, cmap, fps, format):
     for path in status_files:
         idx = os.path.splitext(os.path.basename(path))[0].split("/")[-1].split("_")[1]
         frame_args.append((
-            path, idx, field, scatter, cmap, vmin, vmax, format,
+            path, idx, field, scatter, vmin, vmax,
             NgridX, NgridY, BoxSizeX, BoxSizeY, positions_template, x_edges, y_edges
         ))
 
@@ -176,7 +174,12 @@ def render_frames(method, field, scatter, cmap, fps, format):
 
 def main():
     parser = argparse.ArgumentParser(description="Animate PM snapshots.")
-    parser.add_argument("--method", default="TSC", help="Method subfolder under artifacts/")
+    parser.add_argument(
+        "--backend",
+        default="hpc",
+        choices=["serial", "vec", "hpc", "gpu"],
+        help="Backend subfolder under artifacts/ (serial/vec/hpc/gpu/all)",
+    )
     parser.add_argument(
         "--field",
         default="particles",
@@ -190,22 +193,24 @@ def main():
         action="store_true",
         help="Overlay particle positions if positions_*.txt are present",
     )
-    parser.add_argument("--cmap", default="viridis", help="Matplotlib colormap")
-    parser.add_argument("--format", default="bin", choices=["txt", "bin"], help="Format of the data files")
+    parser.add_argument(
+        "--params",
+        default="params.conf",
+        help="Path to params.conf",
+    )
     args = parser.parse_args()
 
     frames, duration = render_frames(
-        method=args.method,
+        backend=args.backend,
         field=args.field,
         scatter=args.scatter,
-        cmap=args.cmap,
         fps=args.fps,
-        format=args.format,
+        params_path=args.params,
     )
 
     out_path = args.out
     if out_path is None:
-        out_path = os.path.join(OUT_DIR, args.method, f"{args.field}.gif")
+        out_path = os.path.join(OUT_DIR, args.backend, f"{args.field}.gif")
 
     print(f"Saving animation to {out_path}...")
     imageio.mimsave(out_path, frames, duration=duration)

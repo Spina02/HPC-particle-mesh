@@ -5,6 +5,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef USE_GPU
+    #include <cuda_runtime.h>
+#endif
+
+// Global timing accumulators (used for all backends, including GPU)
+static double t_total_start;
+static double t_density;
+static double t_fft;
+static double t_potential;
+static double t_forces;
+static double t_interpolation;
+static double t_kick;
+static double t_drift;
+static double t_reorder;
 
 int main(int argc, char* argv[]) {
 
@@ -36,24 +50,36 @@ int main(int argc, char* argv[]) {
     if (mesh == NULL) return EXIT_FAILURE;
     
     uint grid_size = mesh->grid_size;
-    double cell_size_col = params->grid.BoxSize[_col_] / params->grid.Ngrid[_col_];
-    double cell_size_row = params->grid.BoxSize[_row_] / params->grid.Ngrid[_row_];
+    real_t cell_size_col = params->grid.BoxSize[_col_] / params->grid.Ngrid[_col_];
+    real_t cell_size_row = params->grid.BoxSize[_row_] / params->grid.Ngrid[_row_];
     
-    double norm = 1.0 / grid_size;
-    double eta = 0.05;
-    double epsilon = MIN(cell_size_col, cell_size_row);
-    double two_eta_epsilon = 2.0 * eta * epsilon;
-    double dt = 0.05; // initial timestep guess
+    real_t norm = (real_t)1 / grid_size;
+    real_t eta = (real_t)0.05;
+    real_t epsilon = MIN(cell_size_col, cell_size_row);
+    real_t two_eta_epsilon = (real_t)2 * eta * epsilon;
+    real_t dt = (real_t)0.05; // initial timestep guess
     
     // auto vectorize 16 byte vecs
     vec2d_t BoxSize = {params->grid.BoxSize[_col_], params->grid.BoxSize[_row_]};
     // auto vectorize 8 byte vecs
     vec2_t Ngrid = {params->grid.Ngrid[_col_], params->grid.Ngrid[_row_]};
     
-    double* tmp_arrays = (double*) malloc(particles->N * 6 * sizeof(double));
+    real_t* tmp_arrays = (real_t*) allocate_aligned(particles->N * 6 * sizeof(real_t));
+
+    #ifdef USE_GPU
+        size_t fft_size = (size_t) params->grid.Ngrid[0] * (params->grid.Ngrid[1] / 2 + 1);
+
+        #pragma acc data copyin(particles->pos_col[0:particles->N], particles->pos_row[0:particles->N], \
+                                particles->vel_col[0:particles->N], particles->vel_row[0:particles->N], \
+                                particles->acc_col[0:particles->N], particles->acc_row[0:particles->N]) \
+                                create(mesh->density[0:grid_size], mesh->pot[0:grid_size], \
+                                       mesh->forces_x[0:grid_size], mesh->forces_y[0:grid_size], \
+                                       mesh->kDensity[0:fft_size], mesh->kPot[0:fft_size])
+        {
+    #endif
     
-    // reorder the particles for better cache locality
     #ifndef USE_GPU
+    // reorder the particles for better cache locality
     reorder_particles(particles, &params->grid, tmp_arrays);
     #endif
     
@@ -67,37 +93,25 @@ int main(int argc, char* argv[]) {
     #endif
     
     // timers
-    double t_total_start = TCPU_TIME;
-    double t_density = 0.0;
-    double t_fft = 0.0;
-    double t_potential = 0.0;
-    double t_forces = 0.0;
-    double t_interpolation = 0.0;
-    double t_kick = 0.0;
-    double t_drift = 0.0;
-    double t_reorder = 0.0;
+    t_total_start = TCPU_TIME;
+    t_density = 0.0;
+    t_fft = 0.0;
+    t_potential = 0.0;
+    t_forces = 0.0;
+    t_interpolation = 0.0;
+    t_kick = 0.0;
+    t_drift = 0.0;
+    t_reorder = 0.0;
     double t0;
 
-    #ifdef OMP
-    double* restrict pot = __builtin_assume_aligned(mesh->pot, ALIGNMENT);
+    #ifdef USE_OMP
+    real_t* restrict pot = __builtin_assume_aligned(mesh->pot, ALIGNMENT);
     #else
-    double* pot = mesh->pot;
+    real_t* pot = mesh->pot;
     #endif
 
     #ifdef SAVE
     int save_err = 0;  /* defer return to avoid branching out of OpenACC data region */
-    #endif
-
-    #ifdef USE_GPU
-        size_t fft_size = (size_t) params->grid.Ngrid[0] * (params->grid.Ngrid[1] / 2 + 1);
-
-        #pragma acc data copyin(particles->pos_col[0:particles->N], particles->pos_row[0:particles->N], \
-                                particles->vel_col[0:particles->N], particles->vel_row[0:particles->N], \
-                                particles->acc_col[0:particles->N], particles->acc_row[0:particles->N]) \
-                                create(mesh->density[0:grid_size], mesh->pot[0:grid_size], \
-                                       mesh->forces_x[0:grid_size], mesh->forces_y[0:grid_size], \
-                                       mesh->kDensity[0:fft_size], mesh->kPot[0:fft_size])
-        {
     #endif
 
     // ----------------------------------------------------
@@ -109,7 +123,7 @@ int main(int argc, char* argv[]) {
         debug_print("Iteration %d\n", (int) t);
 
         #ifndef USE_GPU
-        // reorder the particles every 10 iterations for better cache locality
+        // reorder the particles every 20 iterations for better cache locality
         if ((t + 1) % 20 == 0) {
             t0 = TCPU_TIME;
             reorder_particles(particles, &params->grid, tmp_arrays);
@@ -129,12 +143,12 @@ int main(int argc, char* argv[]) {
         #ifdef USE_GPU
             #pragma acc host_data use_device(mesh->density, mesh->kDensity)
             {
-                if (cufftExecD2Z(mesh->plan_fwd, (cufftDoubleReal*)mesh->density, (cufftDoubleComplex*)mesh->kDensity) != CUFFT_SUCCESS) {
-                    printf("Error executing cufftExecD2Z\n"); exit(1);
+                if (CUFFT_R2C_FUNC(mesh->plan_fwd, (cufft_real_t*)mesh->density, (complex_t*)mesh->kDensity) != CUFFT_SUCCESS) {
+                    printf("Error executing cuFFT R2C\n"); exit(1);
                 }
             }
         #else
-            fftw_execute(mesh->fft_real_fwd);
+            PM_FFTW_FWD(mesh->plan_fwd);
         #endif
         t_fft += TCPU_TIME - t0;
 
@@ -150,19 +164,19 @@ int main(int argc, char* argv[]) {
         #ifdef USE_GPU
             #pragma acc host_data use_device(mesh->kPot, mesh->pot)
             {
-                if (cufftExecZ2D(mesh->plan_bck, (cufftDoubleComplex*)mesh->kPot, (cufftDoubleReal*)mesh->pot) != CUFFT_SUCCESS) {
-                    printf("Error executing cufftExecZ2D\n"); exit(1);
+                if (CUFFT_C2R_FUNC(mesh->plan_bck, (complex_t*)mesh->kPot, (cufft_real_t*)mesh->pot) != CUFFT_SUCCESS) {
+                    printf("Error executing cuFFT C2R\n"); exit(1);
                 }
             }
         #else
-            fftw_execute(mesh->fft_real_bck);
+            PM_FFTW_BCK(mesh->plan_bck);
         #endif
         t_fft += TCPU_TIME - t0;
 
         // normalize the potential
         #if defined(USE_GPU)
             #pragma acc parallel loop present(pot[0:grid_size])
-        #elif defined(OMP)
+        #elif defined(USE_OMP)
             #pragma omp parallel for simd schedule(static) aligned(pot : ALIGNMENT)
         #endif
         for (uint i=0; i<grid_size; i++) pot[i] *= norm;
@@ -183,7 +197,7 @@ int main(int argc, char* argv[]) {
         debug_print("\tUpdating particles\n");
         t0 = TCPU_TIME;
         // half kick
-        kick_particles(particles, dt/2.0);
+        kick_particles(particles, dt / (real_t)2);
         t_kick += TCPU_TIME - t0;
         // drift
         t0 = TCPU_TIME;
@@ -199,12 +213,12 @@ int main(int argc, char* argv[]) {
         #ifdef USE_GPU
             #pragma acc host_data use_device(mesh->density, mesh->kDensity)
             {
-                if (cufftExecD2Z(mesh->plan_fwd, (cufftDoubleReal*)mesh->density, (cufftDoubleComplex*)mesh->kDensity) != CUFFT_SUCCESS) {
-                    printf("Error executing cufftExecD2Z\n"); exit(1);
+                if (CUFFT_R2C_FUNC(mesh->plan_fwd, (cufft_real_t*)mesh->density, (complex_t*)mesh->kDensity) != CUFFT_SUCCESS) {
+                    printf("Error executing cuFFT R2C\n"); exit(1);
                 }
             }
         #else
-            fftw_execute(mesh->fft_real_fwd);
+            PM_FFTW_FWD(mesh->plan_fwd);
         #endif
         t_fft += TCPU_TIME - t0;
         
@@ -216,18 +230,18 @@ int main(int argc, char* argv[]) {
         #ifdef USE_GPU
             #pragma acc host_data use_device(mesh->kPot, mesh->pot)
             {
-                if (cufftExecZ2D(mesh->plan_bck, (cufftDoubleComplex*)mesh->kPot, (cufftDoubleReal*)mesh->pot) != CUFFT_SUCCESS) {
-                    printf("Error executing cufftExecZ2D\n"); exit(1);
+                if (CUFFT_C2R_FUNC(mesh->plan_bck, (complex_t*)mesh->kPot, (cufft_real_t*)mesh->pot) != CUFFT_SUCCESS) {
+                    printf("Error executing cuFFT C2R\n"); exit(1);
                 }
             }
         #else
-            fftw_execute(mesh->fft_real_bck);
+            PM_FFTW_BCK(mesh->plan_bck);
         #endif
         t_fft += TCPU_TIME - t0;
         
         #if defined(USE_GPU)
             #pragma acc parallel loop present(pot[0:grid_size])
-        #elif defined(OMP)
+        #elif defined(USE_OMP)
             #pragma omp parallel for simd schedule(static) aligned(pot : ALIGNMENT)
         #endif
         for (uint i=0; i<grid_size; i++) pot[i] *= norm;
@@ -242,12 +256,12 @@ int main(int argc, char* argv[]) {
 
         // half kick
         t0 = TCPU_TIME;
-        kick_particles(particles, dt/2.0);
+        kick_particles(particles, dt / (real_t)2);
         t_kick += TCPU_TIME - t0;
 
         // 8. Save the positions and status
         #ifdef SAVE
-        if (t % 3 == 0 && !save_err) {
+        if (t % 10 == 0 && !save_err) {
             #ifdef USE_GPU
             #pragma acc update self(particles->pos_col[0:particles->N], particles->pos_row[0:particles->N], \
                                     mesh->density[0:grid_size], mesh->pot[0:grid_size], \
@@ -264,14 +278,14 @@ int main(int argc, char* argv[]) {
 
         // dt = sqrt(2 * eta * epsilon / max(abs(acc_col), abs(acc_row)))
         // auto vectorize 16 byte vecs
-        double max_acc = MAX(particles->max_acc_col, particles->max_acc_row);
+        real_t max_acc = MAX(particles->max_acc_col, particles->max_acc_row);
         if (max_acc > 0.0) {
-            dt = sqrt(two_eta_epsilon / max_acc);
+            dt = SQRT(two_eta_epsilon / max_acc);
         }
         
         // clamp the timestep
-        if (dt < 1e-4) dt = 1e-4; // Lower bound
-        if (dt > 0.5) dt = 0.5; // Upper bound
+        if (dt < (real_t)1e-4) dt = (real_t)1e-4; // Lower bound
+        if (dt > (real_t)0.5) dt = (real_t)0.5;   // Upper bound
         debug_print("Timestep: %f\n", dt);
     }
 
@@ -291,7 +305,7 @@ int main(int argc, char* argv[]) {
     double t_total = TCPU_TIME - t_total_start;
 
     // compute throughput
-    double throughput = (double) params->grid.Npoints * params->system.n_iter / t_total;
+    real_t throughput = (real_t) params->grid.Npoints * params->system.n_iter / t_total;
     
     // Timing report (always printed for benchmarking)
     printf("\n=== TIMING REPORT ===\n");

@@ -1,13 +1,33 @@
-# ============================================================================
+# ----------------------------------------------------------------------------
+#                              BUILD OPTIONS
+# ----------------------------------------------------------------------------
+
+# Set USE_FLOAT=1 to build with single precision
+USE_FLOAT ?= 0
+GPU_ARCH ?= cc80
+
+# ----------------------------------------------------------------------------
 #                              COMPILER & LINKER
-# ============================================================================
+# ----------------------------------------------------------------------------
 
-CC = gcc
-LDFLAGS = -lfftw3 -lm
+CC  = gcc
 
-# ============================================================================
+# Precision‑dependent FFTW libraries
+ifeq ($(USE_FLOAT),1)
+    # --- SINGLE PRECISION ---
+    FFTW_LIB     = -lfftw3f
+    FFTW_OMP_LIB = -lfftw3f_omp
+else
+    # --- DOUBLE PRECISION ---
+    FFTW_LIB     = -lfftw3
+    FFTW_OMP_LIB = -lfftw3_omp
+endif
+
+LDFLAGS = $(FFTW_LIB) -lm
+
+# ----------------------------------------------------------------------------
 #                              DIRECTORIES
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 SRC_DIR = src
 INC_DIR = include
@@ -20,9 +40,13 @@ OBJ_DIR_VEC    = build/vec
 OBJ_DIR_HPC    = build/hpc
 OBJ_DIR_GPU    = build/gpu
 
-# ============================================================================
+# C++/CUDA source for GPU radix sort
+GPU_CPP_SRCS = $(SRC_DIR)/gpu_rsort.cpp
+GPU_CPP_OBJS = $(OBJ_DIR_GPU)/gpu_rsort.o
+
+# ----------------------------------------------------------------------------
 #                              SOURCE FILES
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 SRCS     = $(wildcard $(SRC_DIR)/*.c)
 HEADERS  = $(wildcard $(INC_DIR)/*.h)
@@ -32,21 +56,25 @@ OBJS_VEC    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_VEC)/%.o)
 OBJS_HPC    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_HPC)/%.o)
 OBJS_GPU    = $(SRCS:$(SRC_DIR)/%.c=$(OBJ_DIR_GPU)/%.o)
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              TARGETS
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 TARGET_SERIAL = $(BIN_DIR)/particle-mesh-serial
 TARGET_VEC    = $(BIN_DIR)/particle-mesh-vec
 TARGET_HPC    = $(BIN_DIR)/particle-mesh-hpc
 TARGET_GPU    = $(BIN_DIR)/particle-mesh-gpu
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              COMPILER FLAGS
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 # Common flags for all builds
 CFLAGS_COMMON = -Wall -Wextra -Wpedantic -Werror -I$(INC_DIR) -DPOW2GRID
+
+ifeq ($(USE_FLOAT),1)
+    CFLAGS_COMMON += -DUSE_FLOAT
+endif
 
 # HPC optimizations base
 CFLAGS_HPC_BASE = $(CFLAGS_COMMON) -O3 -DNDEBUG \
@@ -58,16 +86,16 @@ CFLAGS_VEC = -DVEC -fopenmp-simd -ftree-vectorize -funroll-loops -mprefer-vector
 # Optional: -fopt-info-vec-optimized -fopt-info-vec-missed
 
 # OpenMP flags
-CFLAGS_OMP = -fopenmp -DOMP
-LDFLAGS_OMP = -lfftw3_omp -flto
+CFLAGS_OMP = -fopenmp -DUSE_OMP
+LDFLAGS_OMP = $(FFTW_OMP_LIB) -flto
 
 # GPU/OpenACC flags (NVIDIA HPC SDK)
-CFLAGS_GPU  = -I$(INC_DIR) -DPOW2GRID -O3 -fast -acc -gpu=cc80,lineinfo -Minfo=accel -DUSE_GPU
-LDFLAGS_GPU = -cudalib=cufft -lm
+CFLAGS_GPU   = -I$(INC_DIR) -DPOW2GRID -O3 -fast -acc -gpu=$(GPU_ARCH),lineinfo -Minfo=accel -DUSE_GPU
+LDFLAGS_GPU  = -cudalib=cufft -lm
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              BUILD RULES
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 .PHONY: all debug serial vec omp hpc gpu test clean clean-out clean-serial clean-vec clean-hpc clean-gpu run-serial run-vec run-hpc run-gpu plot plot-results \
         sync-up sync-down get-results
@@ -84,37 +112,35 @@ serial: $(TARGET_SERIAL)
 
 # ----------------------------- HPC Builds -----------------------------------
 
-# vec: CC = gcc
-# vec: CFLAGS_VEC_BUILD = $(CFLAGS_HPC_BASE) $(CFLAGS_VEC) -DOUTPUT_DIR=\"artifacts/vec\" $(CFLAGS_EXTRA)
-# vec: LDFLAGS = -lfftw3 -lm -flto
-# vec: $(TARGET_VEC)
-
 vec: CC = gcc
 vec: CFLAGS_VEC_BUILD = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) -DOUTPUT_DIR=\"artifacts/vec\" $(CFLAGS_EXTRA)
-vec: LDFLAGS = -lfftw3 -lm -flto
+vec: LDFLAGS = $(FFTW_LIB) -lm -flto
 vec: $(TARGET_VEC)
 
 omp: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_OMP) -DOUTPUT_DIR=\"artifacts/hpc\" $(CFLAGS_EXTRA)
-omp: LDFLAGS = -lfftw3 -lm $(LDFLAGS_OMP)
+omp: LDFLAGS = $(FFTW_LIB) -lm $(LDFLAGS_OMP)
 omp: $(TARGET_HPC)
 
 hpc: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) -DOUTPUT_DIR=\"artifacts/hpc\" $(CFLAGS_EXTRA)
-hpc: LDFLAGS = -lfftw3 -lm $(LDFLAGS_OMP)
+hpc: LDFLAGS = $(FFTW_LIB) -lm $(LDFLAGS_OMP)
 hpc: $(TARGET_HPC)
 
 # ----------------------------- GPU Builds -----------------------------------
 
 gpu: CC = nvc
-gpu: CFLAGS_GPU_BUILD = $(CFLAGS_GPU) -DOUTPUT_DIR=\"artifacts/gpu\" $(CFLAGS_EXTRA)
+gpu: CFLAGS_GPU_BUILD = $(CFLAGS_GPU) -DALIGNED -DOUTPUT_DIR=\"artifacts/gpu\" $(CFLAGS_EXTRA)
 gpu: LDFLAGS = $(LDFLAGS_GPU)
 gpu: $(TARGET_GPU)
 
 test:
 	chmod +x scripts/*.sh && ./scripts/all.sh
 
-# ============================================================================
+test-float:
+	chmod +x scripts/*.sh && USE_FLOAT=1 ./scripts/all.sh
+
+# ----------------------------------------------------------------------------
 #                              LINKING
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 $(TARGET_SERIAL): $(OBJS_SERIAL) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -128,9 +154,9 @@ $(TARGET_HPC): $(OBJS_HPC) | $(BIN_DIR)
 $(TARGET_GPU): $(OBJS_GPU) | $(BIN_DIR)
 	$(CC) $(CFLAGS_GPU_BUILD) -o $@ $^ $(LDFLAGS)
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              COMPILATION
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 $(OBJ_DIR_SERIAL)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_SERIAL)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -144,9 +170,9 @@ $(OBJ_DIR_HPC)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_HPC)
 $(OBJ_DIR_GPU)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR_GPU)
 	$(CC) $(CFLAGS_GPU_BUILD) -c $< -o $@
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              DIRECTORIES
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 $(OBJ_DIR_SERIAL):
 	mkdir -p $@
@@ -166,9 +192,9 @@ $(BIN_DIR):
 $(OUT_DIR):
 	mkdir -p $@
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              UTILITIES
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 clean:
 	rm -rf build $(BIN_DIR)
@@ -197,14 +223,14 @@ run-gpu: $(TARGET_GPU) params.conf
 	./$(TARGET_GPU) params.conf
 
 plot:
-	python plot.py
+	python plots/plot.py
 
 plot-results:
-	python plot_results.py
+	python plots/plot_results.py
 
-# ============================================================================
+# ----------------------------------------------------------------------------
 #                              RSYNC (Leonardo)
-# ============================================================================
+# ----------------------------------------------------------------------------
 
 LEO_HOST = login.leonardo.cineca.it
 LEO_USER = aspinel1

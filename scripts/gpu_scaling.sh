@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# =======================================================
+# -------------------------------------------------------
 #            HPC Execution - GPU Scaling
-# =======================================================
+# -------------------------------------------------------
 # GPU scaling: Increasing the problem size on a single device
 
 export JOB_NAME="pm-gpu-scaling"
@@ -15,6 +15,10 @@ PARTITION=boost_usr_prod
 EXEC=./bin/particle-mesh-gpu
 CONF=params.conf
 
+# Propagate USE_FLOAT (default 0) down to Makefile
+USE_FLOAT_VALUE=${USE_FLOAT:-0}
+echo ">>> Using USE_FLOAT=${USE_FLOAT_VALUE} for GPU scaling build (if compiled)"
+
 # Remove old CSV to start fresh
 rm -f $TIMING_CSV
 module purge
@@ -22,7 +26,7 @@ module load nvhpc
 
 if [ "$COMPILE" = TRUE ]; then
     echo "Compiling on compute node..."
-    srun -N1 -n1 -c8 --mem=8GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-gpu gpu
+    srun -N1 -n1 -c8 --mem=8GB -p $PARTITION -A $ACCOUNT --time=00:05:00 make clean-gpu gpu USE_FLOAT=${USE_FLOAT_VALUE}
 fi
 
 CONFIGS=(

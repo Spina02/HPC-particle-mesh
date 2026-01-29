@@ -3,7 +3,7 @@
 
 #include "global.h"
 
-#ifdef OMP
+#ifdef USE_OMP
 #include <omp.h>
 #endif
 

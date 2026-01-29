@@ -4,16 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#ifdef OMP
+#include <stdio.h>
+#ifdef USE_OMP
     #include <omp.h>
 #endif
-#ifdef USE_GPU
-    #include <cufft.h>
-    #include <openacc.h>
-#else
-    #include <fftw3.h>
+
+#ifdef __cplusplus
+/* Make C99 'restrict' compatible with C++ compilers (e.g., nvc++, nvcc host) */
+#ifndef restrict
+#define restrict __restrict__
+#endif
 #endif
 
+// ------------------------------------------
+// 1. GENERAL SETTINGS
+// ------------------------------------------
 
 // debug print macro
 #ifdef DEBUG
@@ -35,45 +40,144 @@
 
 #define THREADS_LIMIT 32
 
-#define G_SI 6.67e-11
-extern double G_prime;
+// ------------------------------------------
+// 2. PRECISION AND MATH MACROS
+// ------------------------------------------
 
-#ifdef FLOAT
+#ifdef USE_FLOAT // single precision
     typedef float real_t;
-    typedef float vec2d_t[2];
-    #ifdef USE_GPU
-        typedef cufftComplex complex_t;
-    #else
-        typedef fftw_complex complex_t;
-    #endif
-#else // DOUBLE
+    #define REAL_FMT "%f"
+    #define M_PI_T      3.14159265358979323846f
+    #define G_SI        6.67e-11f
+    // name mangling
+    #define M_F(func)    func ## f      // sqrt -> sqrtf
+    #define FFTW_N(name) fftwf_ ## name // execute -> fftwf_execute
+
+#else // double precision
     typedef double real_t;
-    typedef double vec2d_t[2];
-    #ifdef USE_GPU
-        typedef cufftDoubleComplex complex_t;
-    #else
-        typedef fftw_complex complex_t;
-    #endif
+    #define REAL_FMT "%lf"
+    #define M_PI_T      3.14159265358979323846
+    #define G_SI        6.67e-11
+    // name mangling
+    #define M_F(func)    func           // sqrt -> sqrt
+    #define FFTW_N(name) fftw_ ## name  // execute -> fftw_execute
 #endif
 
+// Unified Math Macros
+#define SQRT(x)     M_F(sqrt)(x)
+#define SIN(x)      M_F(sin)(x)
+#define COS(x)      M_F(cos)(x)
+#define FABS(x)     M_F(fabs)(x)
+#define CEIL(x)     M_F(ceil)(x)
+#define MAX(x,y)    ((x) > (y) ? (x) : (y))
+#define MIN(x,y)    ((x) < (y) ? (x) : (y))
+
 typedef unsigned int uint;
-typedef uint vec2_t[2];
+typedef uint   vec2_t[2];   // Integer vector
+typedef real_t vec2d_t[2];  // Real vector
+extern real_t G_prime;      // Declared here, defined in main.c
+
+// ------------------------------------------
+// 3. FFT ABSTRACTION LAYER
+// ------------------------------------------
+
+#ifdef USE_GPU // GPU
+    #include <cufft.h>
+    #include <openacc.h>
+
+    #define FFTW_INIT_THREADS
+    #define FFTW_PLAN_WITH_NTHREADS
+    #define FFTW_CLEANUP_THREADS
+
+    // GPU types
+    #ifdef USE_FLOAT
+        typedef cufftComplex complex_t;
+        typedef cufftReal    cufft_real_t;
+        #define CUFFT_TYPE_R2C     CUFFT_R2C
+        #define CUFFT_TYPE_C2R     CUFFT_C2R
+        #define CUFFT_R2C_FUNC     cufftExecR2C
+        #define CUFFT_C2R_FUNC     cufftExecC2R
+    #else
+        typedef cufftDoubleComplex complex_t;
+        typedef cufftDoubleReal    cufft_real_t;
+        #define CUFFT_TYPE_R2C     CUFFT_D2Z
+        #define CUFFT_TYPE_C2R     CUFFT_Z2D
+        #define CUFFT_R2C_FUNC     cufftExecD2Z
+        #define CUFFT_C2R_FUNC     cufftExecZ2D
+    #endif
+
+    typedef cufftHandle pm_plan_t;
+
+    #define C_RE(c) (c).x
+    #define C_IM(c) (c).y
+
+    // GPU memory management (host pinned/aligned memory)
+    static inline void* pm_malloc(size_t n, size_t size) { 
+        void* ptr = NULL; 
+        if (posix_memalign(&ptr, ALIGNMENT, n * size) != 0) return NULL; 
+        return ptr; 
+    }
+    static inline void pm_free(void* ptr) { free(ptr); }
+
+    // GPU FFTW Function Wrappers
+    #define PM_FFTW_FWD             CUFFT_R2C_FUNC
+    #define PM_FFTW_BCK             CUFFT_C2R_FUNC
+    #define PM_DESTROY_PLAN         cufftDestroy
+
+#else // CPU
+    #include <fftw3.h>
+
+    // CPU types
+    typedef FFTW_N(complex) complex_t;
+    typedef FFTW_N(plan)    pm_plan_t;
+
+    // CPU FFTW Thread Management
+    #ifdef USE_OMP
+        #define FFTW_INIT_THREADS       FFTW_N(init_threads)()
+        #define FFTW_PLAN_WITH_NTHREADS FFTW_N(plan_with_nthreads)(omp_get_max_threads())
+        #define FFTW_CLEANUP_THREADS    FFTW_N(cleanup_threads)()
+    #else
+        #define FFTW_INIT_THREADS
+        #define FFTW_PLAN_WITH_NTHREADS
+        #define FFTW_CLEANUP_THREADS
+    #endif
+    
+    #define FFTW_PLAN_DFT_R2C_2D    FFTW_N(plan_dft_r2c_2d)
+    #define FFTW_PLAN_DFT_C2R_2D    FFTW_N(plan_dft_c2r_2d)
+
+    // CPU Complex accessor macros
+    #define C_RE(c) ((c)[0])
+    #define C_IM(c) ((c)[1])
+
+    // CPU Memory Management (FFTW Optimized)
+    static inline void* pm_malloc(size_t n, size_t size) { (void)size; return FFTW_N(alloc_complex)(n); }
+    static inline void pm_free(void* ptr) { FFTW_N(free)(ptr); }
+    
+    // CPU FFTW Function Wrappers
+    #define PM_FFTW_FWD             FFTW_N(execute)
+    #define PM_FFTW_BCK             FFTW_N(execute)
+    #define PM_DESTROY_PLAN         FFTW_N(destroy_plan)
+#endif
+
+// ------------------------------------------
+// 4. STRUCTURES DEFINITIONS
+// ------------------------------------------
 
 typedef struct Particles {
     
-    double* restrict pos_col;
-    double* restrict pos_row;
+    real_t* restrict pos_col;
+    real_t* restrict pos_row;
 
-    double* restrict vel_col;
-    double* restrict vel_row;
+    real_t* restrict vel_col;
+    real_t* restrict vel_row;
     
-    double* restrict acc_col;
-    double* restrict acc_row;
+    real_t* restrict acc_col;
+    real_t* restrict acc_row;
     
-    double mass;
+    real_t mass;
 
-    double max_acc_col;
-    double max_acc_row;
+    real_t max_acc_col;
+    real_t max_acc_row;
 
     uint N;
 } Particles;
@@ -81,10 +185,10 @@ typedef struct Particles {
 // struct to handle normalization parameters
 
 typedef struct NormalizationParams {
-    double UnitVel;
-    double UnitMass;
-    double UnitLength;
-    double UnitTime;
+    real_t UnitVel;
+    real_t UnitMass;
+    real_t UnitLength;
+    real_t UnitTime;
 } NormalizationParams;
 
 // struct to handle grid parameters
@@ -96,7 +200,7 @@ typedef struct GridParams {
 } GridParams;
 
 typedef struct SystemParams {
-    double A_deltaPar;
+    real_t A_deltaPar;
     uint n_iter;
 } SystemParams;
 
@@ -107,21 +211,14 @@ typedef struct Params {
 } Params;
 
 typedef struct Mesh {
-    #ifdef USE_GPU
-        cufftDoubleComplex* restrict kDensity;
-        cufftDoubleComplex* restrict kPot;
-        cufftHandle plan_fwd;
-        cufftHandle plan_bck;
-    #else
-        fftw_complex* restrict kDensity;
-        fftw_complex* restrict kPot;
-        fftw_plan fft_real_fwd;
-        fftw_plan fft_real_bck;
-    #endif
-    double* restrict density;
-    double* restrict pot;
-    double* restrict forces_x;
-    double* restrict forces_y;
+    complex_t* restrict kDensity;
+    complex_t* restrict kPot;
+    pm_plan_t plan_fwd;
+    pm_plan_t plan_bck;
+    real_t* restrict density;
+    real_t* restrict pot;
+    real_t* restrict forces_x;
+    real_t* restrict forces_y;
     size_t grid_size;
 } Mesh;
 

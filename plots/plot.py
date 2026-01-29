@@ -1,197 +1,261 @@
+"""
+Plot density, potential, or force magnitude for a specified PM iteration.
+Also supports particles-only (no fields).
+
+Usage:
+  python plot.py --backend hpc --iteration 0 --field all
+  python plot.py --backend hpc --iteration 12 --field density --field potential --scatter
+  python plot.py --backend hpc --iteration 0 --field particles
+"""
+
+import argparse
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
-from numpy import linspace
-import os
-import struct
 
 OUT_DIR = "artifacts"
-METHODS = ["NGP", "CIC", "TSC"]
+FIELDS = ("density", "potential", "force")
+FIELD_CHOICES = (*FIELDS, "particles", "all")
 
-def plot_particles(method, params_path  , positions_path, status_path):
-    # open params file
-    fp = open(params_path, "r")
-    data = fp.readlines()
-    fp.close()
-    
-    # parse params file
-    data = [line.split("=") for line in data if "=" in line and not line.strip().startswith("#")]
-    for line in data:
-        if "NgridX" in line[0]:
-            NgridX = int(line[1].split("#")[0].strip())
-        if "NgridY" in line[0]:
-            NgridY = int(line[1].split("#")[0].strip())
-        if "BoxSizeX" in line[0]:
-            BoxSizeX = float(line[1].split("#")[0].strip())
-        if "BoxSizeY" in line[0]:
-            BoxSizeY = float(line[1].split("#")[0].strip())
-            
-    print(f"NgridX: {NgridX}, NgridY: {NgridY}, BoxSizeX: {BoxSizeX}, BoxSizeY: {BoxSizeY}")
 
-    
+def read_params(params_path="params.conf"):
+    """Parse params.conf for grid/box sizes (same logic as plot_snapshots)."""
+    cfg = {}
+    with open(params_path, "r") as fp:
+        for line in fp:
+            if "=" not in line or line.strip().startswith("#"):
+                continue
+            key, val = line.split("=", 1)
+            cfg[key.strip()] = val.split("#")[0].strip()
+    NgridX = int(cfg["NgridX"])
+    NgridY = int(cfg["NgridY"])
+    BoxSizeX = float(cfg["BoxSizeX"])
+    BoxSizeY = float(cfg["BoxSizeY"])
+    return NgridX, NgridY, BoxSizeX, BoxSizeY
 
-    # check if the files exist
-    if not os.path.exists(positions_path):
-        print(f"File {positions_path} does not exist")
-        return
-    if not os.path.exists(status_path):
-        print(f"File {status_path} does not exist")
-        return
 
-    with open(positions_path, "rb") as fp:
-        data = fp.read()
-
-    # Parse binary data as doubles (8 bytes each)
-    num_doubles = len(data) // 8
-    positions = struct.unpack(f'{num_doubles}d', data)
-    
-    # Reshape into (x, y) pairs
-    if len(positions) % 2 != 0:
-        print(f"File {positions_path} has odd number of values, cannot form (x, y) pairs")
-        return
-    
-    x = [positions[i] for i in range(0, len(positions), 2)]
-    y = [positions[i] for i in range(1, len(positions), 2)]
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-
-    ax.scatter(x, y, s=5, c='black')
-    ax.set_xlabel("x [kpc]")
-    ax.set_ylabel("y [kpc]")
-    ax.set_title(f"Particle Mesh - {method}")
-    
-    dx = BoxSizeX / NgridX
-    dy = BoxSizeY / NgridY
-
-    ax.set_xticks(np.arange(0, BoxSizeX + 1e-9, dx))
-    ax.set_yticks(np.arange(0, BoxSizeY + 1e-9, dy))
-    ax.grid(True)
-
-    # status_*.bin is written by save_status_bin(): 4 doubles per cell:
-    # density, potential, forces_x, forces_y
-    raw = np.fromfile(status_path, dtype=np.float64)
-    if raw.size % 4 != 0:
+def load_status(path, NgridY, NgridX, field):
+    """Load status_*.bin and return 2D grid for the requested field."""
+    data = np.fromfile(path, dtype=np.float64)
+    n_cells = data.size // 4
+    if data.size != 4 * n_cells:
         raise ValueError(
-            f"Status file {status_path} has {raw.size} float64 values; expected multiple of 4 "
-            f"(density, pot, Fx, Fy per cell)."
+            f"Status file {path} has {data.size} float64 values; "
+            "expected multiple of 4 (density, potential, Fx, Fy per cell)."
         )
-    grid_status = raw.reshape((-1, 4))
-    expected_cells = NgridX * NgridY
-    if grid_status.shape[0] != expected_cells:
+    data = data.reshape(-1, 4)
+    if field == "density":
+        return data[:, 0].reshape((NgridY, NgridX))
+    if field == "potential":
+        return data[:, 1].reshape((NgridY, NgridX))
+    if field == "force":
+        fx_fy = data[:, 2:4].reshape((NgridY, NgridX, 2))
+        return np.sqrt(fx_fy[:, :, 0] ** 2 + fx_fy[:, :, 1] ** 2)
+    raise ValueError("field must be one of: density, potential, force")
+
+
+def _grid_from_status(path, NgridX, NgridY):
+    """Return (NgridX, NgridY) to use; infer from file if params mismatch."""
+    raw = np.fromfile(path, dtype=np.float64)
+    n_cells = raw.size // 4
+    if raw.size != 4 * n_cells:
         raise ValueError(
-            f"Status file {status_path} has {grid_status.shape[0]} cells, but params.conf implies "
-            f"{expected_cells} (NgridX={NgridX}, NgridY={NgridY})."
+            f"Status file {path} has {raw.size} float64 values; "
+            "expected multiple of 4."
         )
+    expected = NgridX * NgridY
+    if n_cells == expected:
+        return NgridX, NgridY
+    s = int(n_cells ** 0.5)
+    if s * s != n_cells:
+        raise ValueError(
+            f"Status file {path} has {n_cells} cells; params expect "
+            f"NgridX*NgridY={expected}. Cannot infer non-square grid."
+        )
+    return s, s
 
-    # -----------------------------------------------------------------------
-    #               Plot the density as an alpha color grid
-    # -----------------------------------------------------------------------
-    
-    # reshape into the 2D grid; pm.c flattens in row-major [y, x]
-    grid_density = grid_status[:, 0].reshape((NgridY, NgridX))  # shape: [y, x]
 
-    # normalize for transparency: lower density -> more transparent
-    max_density = grid_density.max() if grid_density.size else 0.0
-    alpha_grid = grid_density / (2 * max_density) if max_density > 0 else np.zeros_like(grid_density)
+def maybe_load_positions(path):
+    """Load positions_*.bin if present; return (x, y) or (None, None)."""
+    if not os.path.exists(path):
+        return None, None
+    pts = np.fromfile(path, dtype=np.float64)
+    pts = pts.reshape(-1, 2)
+    return pts[:, 0], pts[:, 1]
 
-    # plot density on the same grid as particles; edges align to cell boundaries
-    x_edges = np.linspace(0, BoxSizeX, NgridX + 1)
-    y_edges = np.linspace(0, BoxSizeY, NgridY + 1)
-    ax.pcolormesh(
-        x_edges,
-        y_edges,
-        grid_density,
-        cmap="viridis",
-        shading="auto",
-        alpha=alpha_grid,
+
+def plot_field(
+    *,
+    backend,
+    iteration,
+    field,
+    scatter,
+    out_dir,
+    params_path,
+):
+    NgridX, NgridY, BoxSizeX, BoxSizeY = read_params(params_path)
+    status_path = os.path.join(OUT_DIR, backend, "status", f"status_{iteration}.bin")
+    positions_path = os.path.join(
+        OUT_DIR, backend, "positions", f"positions_{iteration}.bin"
     )
 
-    # make grid lines semi-transparent
-    ax.grid(True, alpha=0.2)
-    x_ticks = np.arange(0, BoxSizeX + 1e-9, dx)
-    y_ticks = np.arange(0, BoxSizeY + 1e-9, dy)
-    ax.set_xticks(x_ticks)
-    ax.set_yticks(y_ticks)
-    y_labels = [f"{t:.0f}" if (i + 1) % 10 == 0 else "" for i, t in enumerate(y_ticks)]
-    x_labels = [f"{t:.0f}" if (i + 1) % 10 == 0 else "" for i, t in enumerate(x_ticks)]
-    ax.set_xticklabels(x_labels, fontsize=8)
-    ax.set_yticklabels(y_labels, fontsize=8)
+    if field == "particles":
+        if os.path.exists(status_path):
+            NgridX, NgridY = _grid_from_status(status_path, NgridX, NgridY)
+        x_pts, y_pts = maybe_load_positions(positions_path)
+        if x_pts is None or y_pts is None:
+            raise FileNotFoundError(f"Positions file not found: {positions_path}")
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.scatter(x_pts, y_pts, s=40, c="black", alpha=1, linewidths=0, rasterized=True)
+        ax.set_xlabel("x [kpc]")
+        ax.set_ylabel("y [kpc]")
+        # ax.set_title(f"Particles — {backend} (iteration {iteration})")
+        iteration = 1
+        ax.set_title(f"Particles (iteration {iteration})")
+        ax.set_xlim(0, BoxSizeX)
+        ax.set_ylim(0, BoxSizeY)
+        ax.set_aspect("equal", adjustable="box")
+        dx = BoxSizeX / NgridX
+        dy = BoxSizeY / NgridY
+        step_x = max(1, NgridX // 20)
+        step_y = max(1, NgridY // 20)
+        ax.set_xticks(np.arange(0, BoxSizeX + 1e-9, dx * step_x))
+        ax.set_yticks(np.arange(0, BoxSizeY + 1e-9, dy * step_y))
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"particles_iter{iteration}.png")
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved {out_path}")
+        return
 
-    # keep cells square for both on-screen and saved figures
+    if not os.path.exists(status_path):
+        raise FileNotFoundError(f"Status file not found: {status_path}")
+
+    NgridX, NgridY = _grid_from_status(status_path, NgridX, NgridY)
+    grid = load_status(status_path, NgridY, NgridX, field)
+    x_edges = np.linspace(0, BoxSizeX, NgridX + 1)
+    y_edges = np.linspace(0, BoxSizeY, NgridY + 1)
+
+    x_pts, y_pts = (None, None)
+    if scatter:
+        x_pts, y_pts = maybe_load_positions(positions_path)
+
+    import matplotlib.colors as mcolors
+
+    base = plt.get_cmap("GnBu")
+    trunc = mcolors.LinearSegmentedColormap.from_list(
+        "GnBu",
+        base(np.linspace(0.5, 0.9, 256))
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    mesh = ax.pcolormesh(
+        x_edges,
+        y_edges,
+        grid,
+        cmap=trunc,
+        # cmap="viridis",
+        shading="auto",
+    )
+    # cbar = fig.colorbar(mesh, ax=ax, shrink=0.8)
+    label = "Force magnitude" if field == "force" else field.capitalize()
+    # cbar.set_label(label)
+
+    if x_pts is not None and y_pts is not None:
+        ax.scatter(x_pts, y_pts, s=40, c="k", alpha=0.5, linewidths=0, rasterized=True)
+
+    ax.set_xlabel("x [kpc]")
+    ax.set_ylabel("y [kpc]")
+    # ax.set_title(f"{label} — {backend} (iteration {iteration})")
+    ax.set_title(f"{label} (iteration {iteration})")
     ax.set_xlim(0, BoxSizeX)
     ax.set_ylim(0, BoxSizeY)
     ax.set_aspect("equal", adjustable="box")
-
     fig.tight_layout()
-    density_out = f"{OUT_DIR}/{method}/density.png"
-    print(f"Saving figure to {density_out}")
-    fig.savefig(density_out)
-    # plt.show()
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{field}_iter{iteration}.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+    print(f"Saved {out_path}")
 
-    # -----------------------------------------------------------------------
-    #               Plot the potential as a color grid
-    # -----------------------------------------------------------------------
-    
-    grid_potential = grid_status[:, 1].reshape((NgridY, NgridX))  # shape: [y, x]
-    
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.pcolormesh(
-        x_edges,
-        y_edges,
-        grid_potential,
-        cmap="viridis",
-        shading="auto",
-    )
-    ax.set_xlabel("x [kpc]")
-
-    ax.set_xticks(np.arange(0, BoxSizeX + 1e-9, dx))
-    ax.set_yticks(np.arange(0, BoxSizeY + 1e-9, dy))
-    ax.grid(True)
-
-    fig.tight_layout()
-    potential_out = f"{OUT_DIR}/{method}/potential.png"
-    print(f"Saving figure to {potential_out}")
-    fig.savefig(potential_out)
-    # plt.show()
-    plt.close(fig)
-
-    # -----------------------------------------------------------------------
-    #               Plot the forces as a color grid
-    # -----------------------------------------------------------------------
-    
-    force_components = grid_status[:, 2:4].reshape((NgridY, NgridX, 2))  # shape: [y, x, (Fx, Fy)]
-    grid_forces = np.linalg.norm(force_components, axis=2)  # magnitude for visualization
-    
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.pcolormesh(
-        x_edges,
-        y_edges,
-        grid_forces,
-        cmap="viridis",
-        shading="auto",
-    )
-    ax.set_xlabel("x [kpc]")
-    ax.set_ylabel("y [kpc]")
-    ax.set_title(f"Particle Mesh - {method}")
-
-    ax.set_xticks(np.arange(0, BoxSizeX + 1e-9, BoxSizeX//NgridX))
-    ax.set_yticks(np.arange(0, BoxSizeY + 1e-9, BoxSizeY//NgridY))
-    ax.grid(True)
-
-    fig.tight_layout()
-    forces_out = f"{OUT_DIR}/{method}/forces.png"
-    print(f"Saving figure to {forces_out}")
-    fig.savefig(forces_out)
-    # plt.show()
-    plt.close(fig)
 
 def main():
-    params_path = "params.conf"
-    
-    for method in METHODS:
-        positions_path = f"{OUT_DIR}/{method}/positions/positions_0.bin"
-        status_path = f"{OUT_DIR}/{method}/status/status_0.bin"
-        plot_particles(method, params_path, positions_path, status_path)
+    parser = argparse.ArgumentParser(
+        description="Plot density, potential, or force magnitude for a specified PM iteration.",
+    )
+    parser.add_argument(
+        "--backend",
+        default="hpc",
+        choices=["serial", "vec", "hpc", "gpu"],
+        help="Backend subfolder under artifacts/",
+    )
+    parser.add_argument(
+        "--iteration",
+        "--iter",
+        type=int,
+        default=0,
+        dest="iteration",
+        help="Iteration index (e.g. status_0.bin, positions_0.bin)",
+    )
+    parser.add_argument(
+        "--field",
+        choices=list(FIELD_CHOICES),
+        default=[],
+        action="append",
+        help="Field to plot (can repeat). 'particles' = only particles, no fields. Omit for all fields.",
+    )
+    parser.add_argument(
+        "--scatter",
+        action="store_true",
+        help="Overlay particle positions if positions_<iteration>.bin exists",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="Output directory for PNGs (default: artifacts/<backend>)",
+    )
+    parser.add_argument(
+        "--params",
+        default="params.conf",
+        help="Path to params.conf",
+    )
+    args = parser.parse_args()
+
+    out_dir = args.out
+    if out_dir is None:
+        out_dir = os.path.join(OUT_DIR, args.backend)
+
+    raw_fields = args.field
+    if not raw_fields or "all" in raw_fields:
+        fields = list(FIELDS)  # all = density, potential, force
+        if "particles" in raw_fields:
+            fields.append("particles")  # keep explicitly requested particles
+    else:
+        seen = set()
+        unique = []
+        for f in raw_fields:
+            if f not in seen:
+                seen.add(f)
+                unique.append(f)
+        fields = unique
+
+    for field in fields:
+        try:
+            plot_field(
+                backend=args.backend,
+                iteration=args.iteration,
+                field=field,
+                scatter=args.scatter,
+                out_dir=out_dir,
+                params_path=args.params,
+            )
+        except FileNotFoundError as e:
+            print(e)
+
 
 if __name__ == "__main__":
     main()
