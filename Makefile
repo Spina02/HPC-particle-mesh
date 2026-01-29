@@ -125,6 +125,10 @@ hpc: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) -DOUT
 hpc: LDFLAGS = $(FFTW_LIB) -lm $(LDFLAGS_OMP)
 hpc: $(TARGET_HPC)
 
+hpc-asm: CFLAGS_HPC_BASE = $(CFLAGS_COMMON) -O3 -DNDEBUG -march=native -mtune=native -ffast-math -fno-math-errno -fno-trapping-math
+hpc-asm: CFLAGS_HPC = $(CFLAGS_HPC_BASE) -DALIGNED $(CFLAGS_VEC) $(CFLAGS_OMP) -DOUTPUT_DIR=\"artifacts/hpc\" $(CFLAGS_EXTRA) -save-temps=obj -fverbose-asm
+hpc-asm: LDFLAGS = $(FFTW_LIB) -lm -fopenmp $(FFTW_OMP_LIB)
+hpc-asm: $(TARGET_HPC)
 # ----------------------------- GPU Builds -----------------------------------
 
 gpu: CC = nvc

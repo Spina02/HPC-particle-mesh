@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-RESULTS_DIR = "results-double-no-reorder"
+RESULTS_DIR = "results"
 
 # Create results folder if needed
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -303,5 +303,98 @@ else:
         print(f"{os.path.join(RESULTS_DIR, 'serial_timing.csv')} not found or missing phase columns for breakdown")
     if vec_breakdown is None:
         print(f"{os.path.join(RESULTS_DIR, 'vec_timing.csv')} not found or missing phase columns for breakdown")
+
+
+# ----------------------------------
+#       BACKEND COMPARISON: DOUBLE vs FLOAT (times only, split bars)
+# ----------------------------------
+def _get_backend_times(folder):
+    """Return list of (backend_label, total_time) for a folder (same backends as plot 4)."""
+    result = []
+
+    def load_one_row(path):
+        try:
+            df = _strip_cols(pd.read_csv(path))
+            if len(df) == 0 or 'total' not in df.columns:
+                return None
+            return df.iloc[0]
+        except FileNotFoundError:
+            return None
+
+    row = load_one_row(os.path.join(folder, 'serial_timing.csv'))
+    if row is not None:
+        result.append(('Serial', float(row['total'])))
+    row = load_one_row(os.path.join(folder, 'vec_timing.csv'))
+    if row is not None:
+        result.append(('Vec', float(row['total'])))
+    try:
+        strong = _strip_cols(pd.read_csv(os.path.join(folder, 'strong_scaling.csv')))
+        if 'throughput' in strong.columns and len(strong) > 0:
+            best = strong.loc[strong['throughput'].idxmax()]
+            result.append(('OMP (best)', float(best['total'])))
+    except FileNotFoundError:
+        pass
+    try:
+        gpu = _strip_cols(pd.read_csv(os.path.join(folder, 'gpu_scaling.csv')))
+        if len(gpu) > 0:
+            best = gpu.loc[gpu['throughput'].idxmax()]
+            result.append(('GPU (best)', float(best['total'])))
+    except FileNotFoundError:
+        pass
+    return result
+
+
+def plot_backend_comparison_double_vs_float(folder_double, folder_float, out_path=None):
+    """
+    Plot backend comparison (times only): each backend is one "pillar" split into
+    two bars — double (from folder_double) and float (from folder_float).
+    """
+    times_double = dict(_get_backend_times(folder_double))
+    times_float = dict(_get_backend_times(folder_float))
+    backends = ['Serial', 'Vec', 'OMP (best)', 'GPU (best)']
+    # Only keep backends that have at least one value
+    backends = [b for b in backends if b in times_double or b in times_float]
+    if not backends:
+        print("No backend data in either folder for double vs float comparison")
+        return
+
+    x = np.arange(len(backends))
+    width = 0.35
+
+    t_d = np.array([times_double.get(b, 0) for b in backends])
+    t_f = np.array([times_float.get(b, 0) for b in backends])
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    bars_double = ax.bar(x - width / 2, t_d, width, label='double', color='tab:blue')
+    bars_float = ax.bar(x + width / 2, t_f, width, label='float', color='tab:orange')
+
+    ax.set_ylabel('Total time (s)')
+    ax.set_xlabel('Backend')
+    ax.set_xticks(x)
+    ax.set_xticklabels(backends)
+    ax.set_title('Backend comparison — double vs float (execution time)')
+    ax.legend()
+    ax.bar_label(bars_double, fmt='%.2f', padding=2)
+    ax.bar_label(bars_float, fmt='%.2f', padding=2)
+    plt.tight_layout()
+
+    if out_path:
+        plt.savefig(out_path)
+        plt.close()
+        print(f"Saved {out_path}")
+    else:
+        plt.savefig(os.path.join(RESULTS_DIR, 'double_vs_float.png'))
+        plt.close()
+        print(f"Saved {os.path.join(RESULTS_DIR, 'double_vs_float.png')}")
+
+
+# Generate double vs float comparison if both folders exist (paths relative to script's parent = project root)
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.normpath(os.path.join(_script_dir, '..'))
+_folder_double = os.path.join(_project_root, 'results-double-no-reorder')
+_folder_float = os.path.join(_project_root, 'results-float-no-reorder')
+if os.path.isdir(_folder_double) and os.path.isdir(_folder_float):
+    _out = os.path.join(_project_root, RESULTS_DIR, 'double_vs_float.png')
+    plot_backend_comparison_double_vs_float(_folder_double, _folder_float, out_path=_out)
 
 print(f"Plots saved to {RESULTS_DIR}/")

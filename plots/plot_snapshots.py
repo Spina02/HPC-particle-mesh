@@ -86,7 +86,7 @@ def render_single_frame(args):
         x_pts, y_pts = maybe_load_positions(path)
         if x_pts is None:
             raise SystemExit(f"Missing positions file matching {path}")
-        ax.scatter(x_pts, y_pts, s=10, c="black", alpha=1, linewidths=0, rasterized=True)
+        ax.scatter(x_pts, y_pts, s=4, c="black", alpha=1, linewidths=0, rasterized=True)
     else:
         grid = load_status(path, NgridY, NgridX, field)
         x_pts, y_pts = (None, None)
@@ -117,7 +117,7 @@ def render_single_frame(args):
     fig.tight_layout()
 
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+    fig.savefig(buf, format="png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     buf.seek(0)
     frame = imageio.imread(buf)
@@ -176,7 +176,7 @@ def main():
     parser = argparse.ArgumentParser(description="Animate PM snapshots.")
     parser.add_argument(
         "--backend",
-        default="hpc",
+        default="gpu",
         choices=["serial", "vec", "hpc", "gpu"],
         help="Backend subfolder under artifacts/ (serial/vec/hpc/gpu/all)",
     )

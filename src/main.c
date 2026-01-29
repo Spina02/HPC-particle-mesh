@@ -66,6 +66,24 @@ int main(int argc, char* argv[]) {
     
     real_t* tmp_arrays = (real_t*) allocate_aligned(particles->N * 6 * sizeof(real_t));
 
+    #ifdef SAVE
+    char filename[100];
+    int save_err = 0;  /* defer return to avoid branching out of OpenACC data region */
+    #endif
+
+    #ifndef USE_GPU
+    // reorder the particles for better cache locality
+    reorder_particles(particles, &params->grid, tmp_arrays);
+    #endif
+    
+    // save the initial state of the particles (before GPU data region)
+    #ifdef SAVE
+        sprintf(filename, OUTPUT_POSITIONS_FILE, 0, FORMAT);
+        if (save_positions(particles, filename)) return EXIT_FAILURE;
+        sprintf(filename, OUTPUT_STATUS_FILE, 0, FORMAT);   
+        if (save_status(mesh, filename)) return EXIT_FAILURE;
+    #endif
+
     #ifdef USE_GPU
         size_t fft_size = (size_t) params->grid.Ngrid[0] * (params->grid.Ngrid[1] / 2 + 1);
 
@@ -76,20 +94,6 @@ int main(int argc, char* argv[]) {
                                        mesh->forces_x[0:grid_size], mesh->forces_y[0:grid_size], \
                                        mesh->kDensity[0:fft_size], mesh->kPot[0:fft_size])
         {
-    #endif
-    
-    #ifndef USE_GPU
-    // reorder the particles for better cache locality
-    reorder_particles(particles, &params->grid, tmp_arrays);
-    #endif
-    
-    // save the initial state of the particles
-    #ifdef SAVE
-        char filename[100];
-        sprintf(filename, OUTPUT_POSITIONS_FILE, 0, FORMAT);
-        if (save_positions(particles, filename)) return EXIT_FAILURE;
-        sprintf(filename, OUTPUT_STATUS_FILE, 0, FORMAT);   
-        if (save_status(mesh, filename)) return EXIT_FAILURE;
     #endif
     
     // timers
@@ -108,10 +112,6 @@ int main(int argc, char* argv[]) {
     real_t* restrict pot = __builtin_assume_aligned(mesh->pot, ALIGNMENT);
     #else
     real_t* pot = mesh->pot;
-    #endif
-
-    #ifdef SAVE
-    int save_err = 0;  /* defer return to avoid branching out of OpenACC data region */
     #endif
 
     // ----------------------------------------------------
